@@ -4,7 +4,8 @@ Fragment the shit out of thoat molecule
 """
 
 # Add imports here
-from .wuyang import wuyang
+# from .wuyang import wuyang
+from .partition import Partition
 
 # Handle versioneer
 from ._version import get_versions
