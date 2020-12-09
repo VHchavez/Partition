@@ -11,6 +11,7 @@ from .inverter import Inverter
 from .util import generate_exc
 
 from pyscf import dft, gto
+from kspies import util
 
 
 
@@ -35,39 +36,49 @@ def _scf(mol_string,
     wfn = psi4.proc.scf_wavefunction_factory(method, wfn_base, restricted)
     wfn.initialize()
 
+    print(help(wfn.iterations))
+
+    # if potential is not None:
+    #     wfn.H().np[:] += (potential[0] + potential[1])/2.0
+
     if potential is not None:
-        wfn.H().np[:] += (potential[0] + potential[1])/2.0
-
-
-    wfn.iterations()
+        potential = [psi4.core.Matrix.from_array(i) for i in potential]
+        wfn.iterations(pdft=True, pdft_matrix=potential[0])
+    else:
+        wfn.iterations()
     wfn.finalize_energy()
 
 
-    if potential is not None:
-        exc = generate_exc( mol_string, basis, wfn.Da().np )
+    # if potential is not None:
+    #     exc = generate_exc( mol_string, basis, wfn.Da().np )
 
     #Paste results to pdf_fragment
     energies = { "enuc" : wfn.get_energies('Nuclear'),
                 "e1"   : wfn.get_energies('One-Electron'),
                 "e2"   : wfn.get_energies('Two-Electron'),
                 "exc"  : wfn.get_energies('XC'),
-                # "total": wfn.get_energies('Total Energy')
+                "total": wfn.get_energies('Total Energy')
                 }
 
+    print("Initial Energy:", energies["total"])
+
     if potential is not None:
-        energies["exc"] = exc
+        pass
+        # energies["exc"] = exc
 
-        full_matrix = wfn.Da().np + wfn.Db().np 
-        full_matrix = psi4.core.Matrix.from_array( full_matrix )
+        # full_matrix = wfn.Da().np + wfn.Db().np 
+        # full_matrix = psi4.core.Matrix.from_array( full_matrix )
 
-        p = psi4.core.Matrix.from_array( (potential[0] + potential[1])/2.0 )
+        # p = psi4.core.Matrix.from_array( (potential[0] + potential[1])/2.0 )
 
-        # print("How much am I removing from Core matrix", (p0.vector_dot(full_matrix) +  p1.vector_dot( full_matrix ) ))
+        # # print("How much am I removing from Core matrix", (p0.vector_dot(full_matrix) +  p1.vector_dot( full_matrix ) ))
 
-        energies["e1"] -= (p.vector_dot(full_matrix) )
+        # energies["e1"] -= (p.vector_dot(full_matrix) )
  
     frag_info.geometry = mol.geometry().np
     frag_info.natoms   = mol.natom()
+    frag_info.nalpha   = wfn.nalpha()
+    frag_info.nbeta    = wfn.nbeta()
     frag_info.mol_str  = mol_string
     frag_info.Da       = wfn.Da().np
     frag_info.Db       = wfn.Db().np
@@ -82,7 +93,6 @@ def _scf(mol_string,
     frag_info.energies = energies
     frag_info.energy   = wfn.get_energies('Total Energy')
 
-    print("fragment energy", energies)
     return frag_info
 
 
@@ -105,6 +115,8 @@ class Partition():
         #Plotting Grid
         self.generate_grid()
 
+        #Initial Guess scf
+        self.scf()
 
         #Generate invert class
         self.inverter = Inverter(self)
@@ -124,8 +136,8 @@ class Partition():
         A = mints.ao_overlap()
         A.power(-0.5, 1.e-14)
         self.A = A
-        self.T = mints.ao_kinetic().np
-        self.V = mints.ao_potential().np
+        self.T = mints.ao_kinetic().np.copy()
+        self.V = mints.ao_potential().np.copy()
         self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.basis))
         print("Warning: Assume auxiliary basis set is equal to ao basis set")
         self.jk = None
@@ -138,14 +150,16 @@ class Partition():
 
         self.grid = coords
 
-    def generate_1D_phi(self):
+    def generate_1D_phi(self, target, functional):
 
-        mol = gto.M(atom="Ne",
+        mol = gto.M(atom="He",
                     basis=self.basis_str)
                     
         pb = dft.numint.eval_ao( mol, self.grid )
 
-        return pb
+        guess_grid = util.eval_vxc(mol, target, functional, self.grid)
+
+        return pb, guess_grid
 
     def generate_jk(self, K=True, memory=2.50e8):
         jk = psi4.core.JK.build(self.basis)
