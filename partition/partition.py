@@ -8,7 +8,7 @@ import psi4
 from dask.distributed import Client
 
 from .inverter import Inverter
-from .util import generate_exc
+from .util import generate_exc, basis_to_grid
 
 from pyscf import dft, gto
 from kspies import util
@@ -178,6 +178,32 @@ class Partition():
         coords = np.array(coords)
 
         self.grid = coords
+
+    def axis_plot(self, mat, vpot, blocks):
+
+        #Get quantity on the grid
+        mat, xc_grid = basis_to_grid(mat, vpot, blocks=blocks)
+
+        mat_r = []
+        grid_r = []
+
+        for i in range(len(xc_grid[0])):
+            if np.abs(xc_grid[0][i]) < 1e-10 :
+                if np.abs(xc_grid[1][i]) < 1e-10:
+                    grid_r.append( xc_grid[2][i] )
+                    mat_r.append( mat[i] )
+
+        grid_r = np.array( grid_r )
+        mat_r  = np.array( mat_r ) 
+
+        indx = grid_r.argsort()
+        mat_r = mat_r[indx]
+        grid_r = grid_r[indx]
+
+            
+        return grid_r, mat_r
+                    
+
 
     def generate_1D_phi(self, atom, target, functional):
 

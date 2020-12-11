@@ -11,7 +11,7 @@ from opt_einsum import contract
 
 from pyscf import scf
 
-from .util import to_grid, basis_to_grid, generate_exc
+from .util import to_grid, basis_to_grid, generate_exc, u_xc
 
 import psi4
 psi4.core.be_quiet()
@@ -49,7 +49,7 @@ class Inverter():
 
         if self.inv_type == "xc":
 
-            N = self.part.mol.natoms 
+            N = self.part.mol.nalpha + self.part.mol.nbeta
 
             if guess.lower() == "fermi_amaldi":
 
@@ -58,17 +58,25 @@ class Inverter():
 
                 if self.c_target is not None:
                     print("CCSD target occupied")
-                    Cocca = self.c_target[0]
-                    Coccb = self.c_target[1]
+                    Cocca = self.c_target[0].np
+                    Coccb = self.c_target[1].np
                 else:
                     Cocca = self.part.mol.Ca_occ
                     Coccb = self.part.mol.Cb_occ
 
                 J, _ = self.part.form_jk( Cocca, Coccb )
-                v_FA = - 1.0 * (1/N) * (J[0] + J[1])
+                # # v_FA = - 1.0 * (1/N) * (J[0] + J[1])
+                v_fa = (N-1)/N * ( J[0] + J[1] )
 
-                self.guess_a = - 1.0 * (1/(N/2)) * (J[0] + J[1])
-                self.guess_b = - 1.0 * (1/(N/2)) * (J[0] + J[1])
+                # print("These are my hartrees", J[0] + J[1])
+
+                # print("Hello I am initial guess", v_fa)
+
+                self.guess_a = v_fa
+                self.guess_b = v_fa
+
+                # self.guess_a = - 1.0 * (1/N) * (J[0] + J[1])
+                # self.guess_b = - 1.0 * (1/N) * (J[0] + J[1])
  
             elif guess.lower() == "none":
                 self.guess_a =   np.zeros_like(self.part.T) 
@@ -139,6 +147,66 @@ class Inverter():
                     self.guess_a -= self.part.Ts[i] + self.part.Vs[i] + self.part.frags[i].Va
                     self.guess_b -= self.part.Ts[i] + self.part.Vs[i] + self.part.frags[i].Vb
 
+    # def lagrangian(self, v):
+    #     vks_a = np.einsum("ijk,k->ij", self.part.S3, v[:self.part.nbf]) + self.guess_a
+    #     vks_b = np.einsum("ijk,k->ij", self.part.S3, v[self.part.nbf:]) + self.guess_b
+    #     fock_a = self.part.V + self.part.T + vks_a 
+    #     fock_b = self.part.V + self.part.T + vks_b
+
+    #     Ca, Coca, Da, eigvecs_a = self.build_orbitals( fock_a, self.part.mol.nalpha )
+    #     Cb, Cocb, Db, eigvecs_b = self.build_orbitals( fock_b, self.part.mol.nbeta )
+
+    #     self.Da = Da
+    #     self.Db = Db
+    #     self.Ca = Ca
+    #     self.Cb = Cb
+    #     self.Coca = Coca
+    #     self.Cocb = Cocb
+    #     self.eig_a = eigvecs_a 
+    #     self.eig_b = eigvecs_b
+
+    #     if False:  #Plot potential at each step
+    #         pb, v_guess = self.part.generate_1D_phi( self.nt[0] + self.nt[1], "pbe")
+
+    #         vgrida = np.einsum('t,rt->r', v[:self.part.nbf], pb)
+    #         vgridb = np.einsum('t,rt->r', v[self.part.nbf:], pb)
+
+    #         plt.plot(self.part.grid[:,0], vgrida + vgridb, label="From Optimizer")
+    #         plt.plot(self.part.grid[:,0], v_guess, label="Initial Guess")
+    #         plt.plot(self.part.grid[:,0], v_guess + vgrida + vgridb, label="V_ks")
+    #         plt.legend()
+
+            
+    #         #USING PSI4 UNIQUELY
+    #         # vgrid = to_grid(v[:self.part.nbf], vpot=self.vpot)
+    #         # vgrid, grid = basis_to_grid( v[:self.part.nbf], Vpot=self.vpot, blocks=False )
+    #         # self.xyz_v = vgrid
+    #         # self.xyz   = grid
+    #         # plt.plot(vgrid)
+
+    #         plt.show()
+
+
+    #     self.grad_a = np.einsum('ij,ijt->t', (Da-self.nt[0]), self.part.S3)
+    #     self.grad_b = np.einsum('ij,ijt->t', (Db-self.nt[1]), self.part.S3) 
+
+    #     kinetic   =  np.einsum('ij,ji', self.part.T, (Da + Db))
+    #     potential =  np.einsum('ij,ji', self.part.V, (Da + Db) - self.nt[0] - self.nt[1])
+    #     potential += np.einsum('ij,ji', self.guess_a, (Da - self.nt[0])  )
+    #     potential += np.einsum('ij,ji', self.guess_b, (Db - self.nt[1])  )
+    #     optz      =  np.einsum('t,t', v[:self.nauxbf], self.grad_a)
+    #     optz      += np.einsum('t,t', v[self.nauxbf:], self.grad_b)
+    
+    #     print(f" L1: {kinetic}, L2: {potential}, L3: {optz}")
+
+    #     L = kinetic + potential + optz
+
+    #     penalty = 0.0
+    #     if self.reg > 0:
+    #         penalty = self.reg * self.Dvb(v)
+
+    #     return -(L - penalty)
+
     def lagrangian(self, v):
         vks_a = np.einsum("ijk,k->ij", self.part.S3, v[:self.part.nbf]) + self.guess_a
         vks_b = np.einsum("ijk,k->ij", self.part.S3, v[self.part.nbf:]) + self.guess_b
@@ -178,18 +246,22 @@ class Inverter():
 
             plt.show()
 
+        self.grad_a = np.einsum('ij,ijt->t', (self.nt[0]-Da), self.part.S3)
+        self.grad_b = np.einsum('ij,ijt->t', (self.nt[1]-Da), self.part.S3) 
 
-        self.grad_a = np.einsum('ij,ijt->t', (Da-self.nt[0]), self.part.S3)
-        self.grad_b = np.einsum('ij,ijt->t', (Db-self.nt[1]), self.part.S3) 
+        # kinetic   =  np.einsum('ij,ji', self.part.T, (Da + Db))
+        # potential =  np.einsum('ij,ji', self.part.V, (Da + Db) - self.nt[0] - self.nt[1])
+        # potential += np.einsum('ij,ji', self.guess_a, (Da - self.nt[0])  )
+        # potential += np.einsum('ij,ji', self.guess_b, (Db - self.nt[1])  )
+        # optz      =  np.einsum('t,t', v[:self.nauxbf], self.grad_a)
+        # optz      += np.einsum('t,t', v[self.nauxbf:], self.grad_b)
 
-        kinetic   =  np.einsum('ij,ji', self.part.T, (Da + Db))
-        potential =  np.einsum('ij,ji', self.part.V, (Da + Db) - self.nt[0] - self.nt[1])
-        potential += np.einsum('ij,ji', self.guess_a, (Da - self.nt[0])  )
-        potential += np.einsum('ij,ji', self.guess_b, (Db - self.nt[1])  )
-        optz      =  np.einsum('t,t', v[:self.nauxbf], self.grad_a)
-        optz      += np.einsum('t,t', v[self.nauxbf:], self.grad_b)
+        kinetic   =  -np.einsum('ij,ji', self.part.T, (Da + Db))
+        potential =  np.einsum('ij,ji', self.part.V, self.nt[0] + self.nt[1] - (Da + Db))
+        optz      =  np.einsum('ij,ji', vks_a, (self.nt[0] - Da) )
+        optz     +=  np.einsum('ij,ji', vks_b, (self.nt[1] - Db) )
     
-        # print(f" L1: {kinetic}, L2: {potential}, L3: {optz}")
+        print(f" L1: {kinetic}, L2: {potential}, L3: {optz}")
 
         L = kinetic + potential + optz
 
@@ -197,7 +269,8 @@ class Inverter():
         if self.reg > 0:
             penalty = self.reg * self.Dvb(v)
 
-        return -(L - penalty)
+        return (L - penalty)
+
 
     def gradient(self, v):
         vks_a = np.einsum("ijk,k->ij", self.part.S3, v[:self.part.nbf]) + self.guess_a
@@ -217,16 +290,42 @@ class Inverter():
         self.eig_a = eigvecs_a 
         self.eig_b = eigvecs_b
 
-        self.grad_a = contract('ij,ijt->t', (Da-self.nt[0]), self.part.S3)
-        self.grad_b = contract('ij,ijt->t', (Db-self.nt[1]), self.part.S3) 
-
-        if self.reg > 0:
-            self.grad_a = 2 * self.reg * contract('st,t->s', self.part.T, v[:self.nauxbf])
-            self.grad_b = 2 * self.reg * contract('st,t->s', self.part.T, v[self.nauxbf:])
+        self.grad_a = contract('ij,ijt->t', (self.nt[0]-Da), self.part.S3)
+        self.grad_b = contract('ij,ijt->t', (self.nt[1]-Db), self.part.S3) 
 
         self.grad = np.concatenate( (self.grad_a, self.grad_b) )
 
-        return -self.grad
+        return self.grad
+
+
+    # def gradient(self, v):
+    #     vks_a = np.einsum("ijk,k->ij", self.part.S3, v[:self.part.nbf]) + self.guess_a
+    #     vks_b = np.einsum("ijk,k->ij", self.part.S3, v[self.part.nbf:]) + self.guess_b
+    #     fock_a = self.part.V + self.part.T + vks_a 
+    #     fock_b = self.part.V + self.part.T + vks_b
+
+    #     Ca, Coca, Da, eigvecs_a = self.build_orbitals( fock_a, self.part.mol.nalpha )
+    #     Cb, Cocb, Db, eigvecs_b = self.build_orbitals( fock_b, self.part.mol.nalpha )
+
+    #     self.Da = Da
+    #     self.Db = Db
+    #     self.Ca = Ca
+    #     self.Cb = Cb
+    #     self.Coca = Coca
+    #     self.Cocb = Cocb
+    #     self.eig_a = eigvecs_a 
+    #     self.eig_b = eigvecs_b
+
+    #     self.grad_a = contract('ij,ijt->t', (Da-self.nt[0]), self.part.S3)
+    #     self.grad_b = contract('ij,ijt->t', (Db-self.nt[1]), self.part.S3) 
+
+    #     if self.reg > 0:
+    #         self.grad_a = 2 * self.reg * contract('st,t->s', self.part.T, v[:self.nauxbf])
+    #         self.grad_b = 2 * self.reg * contract('st,t->s', self.part.T, v[self.nauxbf:])
+
+    #     self.grad = np.concatenate( (self.grad_a, self.grad_b) )
+
+    #     return -self.grad
 
     def hessian(self, v):
         vks_a = np.einsum("ijk,k->ij", self.part.S3, v[:self.part.nbf]) + self.guess_a
@@ -340,8 +439,8 @@ class Inverter():
                                     x0  = self.v, 
                                     jac = self.gradient,
                                     method = self.opt_method,
-                                    # tol    = 1e-10,
-                                    options = {"maxiter" : 1000,
+                                    tol    = 1e-5,
+                                    options = {"maxiter" : 10000,
                                                "disp"    : False,}
                                     )
 
@@ -351,8 +450,8 @@ class Inverter():
                                     jac = self.gradient,
                                     hess = self.hessian,
                                     method = self.opt_method,
-                                    # tol    = 1e-10,
-                                    options = {"maxiter" : 1000,
+                                    tol    = 1e-5,
+                                    options = {"maxiter" : 10000,
                                                "disp"    : False, }
                                     )
 
