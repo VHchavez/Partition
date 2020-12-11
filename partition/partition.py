@@ -36,14 +36,9 @@ def _scf(mol_string,
     wfn = psi4.proc.scf_wavefunction_factory(method, wfn_base, restricted)
     wfn.initialize()
 
-    print(help(wfn.iterations))
-
-    # if potential is not None:
-    #     wfn.H().np[:] += (potential[0] + potential[1])/2.0
-
     if potential is not None:
         potential = [psi4.core.Matrix.from_array(i) for i in potential]
-        wfn.iterations(pdft=True, pdft_matrix=potential[0])
+        wfn.iterations(pdft=True, pdft_matrix=potential)
     else:
         wfn.iterations()
     wfn.finalize_energy()
@@ -53,7 +48,7 @@ def _scf(mol_string,
     #     exc = generate_exc( mol_string, basis, wfn.Da().np )
 
     #Paste results to pdf_fragment
-    energies = { "enuc" : wfn.get_energies('Nuclear'),
+    energies = {"enuc" : wfn.get_energies('Nuclear'),
                 "e1"   : wfn.get_energies('One-Electron'),
                 "e2"   : wfn.get_energies('Two-Electron'),
                 "exc"  : wfn.get_energies('XC'),
@@ -62,18 +57,18 @@ def _scf(mol_string,
 
     print("Initial Energy:", energies["total"])
 
-    if potential is not None:
-        pass
-        # energies["exc"] = exc
+    # if potential is not None:
+    #     pass
+    #     # energies["exc"] = exc
 
-        # full_matrix = wfn.Da().np + wfn.Db().np 
-        # full_matrix = psi4.core.Matrix.from_array( full_matrix )
+    #     # full_matrix = wfn.Da().np + wfn.Db().np 
+    #     # full_matrix = psi4.core.Matrix.from_array( full_matrix )
 
-        # p = psi4.core.Matrix.from_array( (potential[0] + potential[1])/2.0 )
+    #     # p = psi4.core.Matrix.from_array( (potential[0] + potential[1])/2.0 )
 
-        # # print("How much am I removing from Core matrix", (p0.vector_dot(full_matrix) +  p1.vector_dot( full_matrix ) ))
+    #     # # print("How much am I removing from Core matrix", (p0.vector_dot(full_matrix) +  p1.vector_dot( full_matrix ) ))
 
-        # energies["e1"] -= (p.vector_dot(full_matrix) )
+    #     # energies["e1"] -= (p.vector_dot(full_matrix) )
  
     frag_info.geometry = mol.geometry().np
     frag_info.natoms   = mol.natom()
@@ -84,6 +79,8 @@ def _scf(mol_string,
     frag_info.Db       = wfn.Db().np
     frag_info.Ca       = wfn.Ca().np
     frag_info.Cb       = wfn.Cb().np
+    frag_info.Va       = wfn.Va().np
+    frag_info.Vb       = wfn.Vb().np
     frag_info.Ca_occ   = wfn.Ca_subset("AO", "OCC").np
     frag_info.Cb_occ   = wfn.Cb_subset("AO", "OCC").np
     frag_info.Ca_vir   = wfn.Ca_subset("AO", "VIR").np
@@ -97,37 +94,72 @@ def _scf(mol_string,
 
 
 class Partition():
-    def __init__(self, frags_str, basis):
+    def __init__(self, basis, mol_str, frags_str=None):
     
         self.basis_str  = basis
+        self.mol_str    = mol_str
+        self.mol        = None
         self.frags_str  = frags_str
         self.frags      = None
-        self.nfrags     = len( frags_str )
+        self.nfrags     = 0 if frags_str is None else len( frags_str )
+        if self.nfrags == 1:
+            raise ValueError("Number of fragments cannot be equal to one!")
+
+
+        #Client for Paralellization on fragments
         self.client     = Client()
 
+        #Allocate Core matrices for Fragmetns
+        self.Ts         = []
+        self.Vs         = []
 
         #Generate Basis Set
-        self.basis      = self.build_basis(self.basis_str)
+        self.build_basis()
         self.nbf        = self.basis.nbf()
         self.generate_mints_matrices()
-
+        self.generate_core_matrices()
 
         #Plotting Grid
         self.generate_grid()
 
         #Initial Guess scf
-        self.scf()
+        self.scf_mol()
+        if self.nfrags != 0:
+            self.scf_frags()
 
         #Generate invert class
         self.inverter = Inverter(self)
 
-        # self.generate_jk()
-        #Generate Matrices
+    ############ METHODS ############
 
+    def build_basis(self):
+        """
+        Creates basis information for all calculations
+        """
+        print("Creating Molecule basis")
+        mol = psi4.geometry(self.mol_str)
+        basis = psi4.core.BasisSet.build( mol, key='BASIS', target=self.basis_str)
+        self.basis = basis
 
-        #Initialized Methods
-        #self.basis = None
-        #self.mints = None
+        if self.nfrags > 1:
+            frags_basis = []
+            for i in range(self.nfrags):
+                frag   = psi4.geometry( self.frags_str[i] )
+                basis = psi4.core.BasisSet.build( frag, key='BASIS', target=self.basis_str)
+                frags_basis.append(basis)
+
+            self.frags_basis = frags_basis
+
+    def generate_core_matrices(self):
+        mints_mol = psi4.core.MintsHelper( self.basis )
+        self.T = mints_mol.ao_kinetic().np.copy()
+        self.V = mints_mol.ao_potential().np.copy()
+
+        if self.nfrags > 1:
+            for i in range(self.nfrags):
+                frag_mol = psi4.core.MintsHelper( self.frags_basis[i] )
+                self.Ts.append( frag_mol.ao_kinetic().np.copy()   )
+                self.Vs.append( frag_mol.ao_potential().np.copy() ) 
 
     def generate_mints_matrices(self):
         mints = psi4.core.MintsHelper( self.basis )
@@ -136,23 +168,20 @@ class Partition():
         A = mints.ao_overlap()
         A.power(-0.5, 1.e-14)
         self.A = A
-        self.T = mints.ao_kinetic().np.copy()
-        self.V = mints.ao_potential().np.copy()
         self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.basis))
-        print("Warning: Assume auxiliary basis set is equal to ao basis set")
         self.jk = None
 
     def generate_grid(self):
         coords = []
-        for x in np.linspace(0, 10, 1001):
+        for x in np.linspace(-7, 7, 10001):
             coords.append((x, 0., 0.))
         coords = np.array(coords)
 
         self.grid = coords
 
-    def generate_1D_phi(self, target, functional):
+    def generate_1D_phi(self, atom, target, functional):
 
-        mol = gto.M(atom="He",
+        mol = gto.M(atom=atom,
                     basis=self.basis_str)
                     
         pb = dft.numint.eval_ao( mol, self.grid )
@@ -191,15 +220,23 @@ class Partition():
 
         return J, K
         
-    def scf(self,
+    def scf_mol(self, 
+               method="svwn"):
+        
+        psi4.set_options({"maxiter" : 100})
+        ret = self.client.map( _scf, [self.mol_str], [method], [self.basis_str] )
+        data = [i.result() for i in ret]
+        self.mol = data[0]
+
+    def scf_frags(self,
             method = "svwn",
             vext   = None,
             evaluate = False):
 
-        frags = self.frags_str
-        method_it = [method for i in range(self.nfrags)]
+        frags     = self.frags_str 
+        method_it = [method         for i in range(self.nfrags)]
         basis_it  = [self.basis_str for i in range(self.nfrags)]
-        vext_it   = [vext for i in range(self.nfrags)]
+        vext_it   = [vext           for i in range(self.nfrags)]
 
         assert len( method_it ) == len( basis_it ) == len( frags )
 
@@ -222,14 +259,24 @@ class Partition():
     def build_auxbasis(self, aux_basis_str):
         self.aux_basis = self.build_basis( aux_basis_str )
 
-    def build_basis(self, basis=None):
-        """
-        Creates basis information for all calculations
-        """
-        mol   = psi4.geometry( self.frags_str[0] )
 
-        if basis is None:
-            basis = psi4.core.BasisSet.build( mol, key='BASIS', target="cc-pvdz" )
-        else: 
-            basis = psi4.core.BasisSet.build( mol, key='BASIS', target=basis     )
-        return basis
+    ##### PDFT METHODS #####
+
+    def frag_sum(self):
+        n_suma = np.zeros( (self.nbf, self.nbf) )
+        n_sumb = np.zeros( (self.nbf, self.nbf) )
+        coc_suma = np.zeros( (self.nbf, self.nbf) )
+        coc_sumb = np.zeros( (self.nbf, self.nbf) )
+
+        # assert self.nfrags == 2, "Nfrags is different to number of fragments"
+
+        for i in range(self.nfrags):
+            n_suma += self.frags[i].Da
+            n_sumb += self.frags[i].Db
+            coc_suma += self.frags[i].Ca_occ
+            coc_sumb += self.frags[i].Cb_occ
+
+        self.frags_na = n_suma.copy()
+        self.frags_nb = n_sumb.copy()
+        self.frags_coca = coc_suma
+        self.frags_cocb = coc_sumb
