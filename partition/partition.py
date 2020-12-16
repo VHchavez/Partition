@@ -8,7 +8,7 @@ import psi4
 from dask.distributed import Client
 
 from .inverter import Inverter
-from .util import generate_exc, basis_to_grid
+from .util import get_from_grid, basis_to_grid
 
 from pyscf import dft, gto
 from kspies import util
@@ -203,8 +203,6 @@ class Partition():
             
         return grid_r, mat_r
                     
-
-
     def generate_1D_phi(self, atom, target, functional):
 
         mol = gto.M(atom=atom,
@@ -228,8 +226,8 @@ class Partition():
         if self.jk is None:
             self.generate_jk()
 
-        C_occ_a = psi4.core.Matrix.from_array(C_occ_a)
-        C_occ_b = psi4.core.Matrix.from_array(C_occ_b)
+        # C_occ_a = psi4.core.Matrix.from_array(C_occ_a)
+        # C_occ_b = psi4.core.Matrix.from_array(C_occ_b)
 
         self.jk.C_left_add(C_occ_a)
         self.jk.C_left_add(C_occ_b)
