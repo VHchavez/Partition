@@ -8,10 +8,10 @@ import psi4
 from dask.distributed import Client
 
 from .inverter import Inverter
-from .util import get_from_grid, basis_to_grid
+from .util import get_from_grid, basis_to_grid #eval_vh
 
-from pyscf import dft, gto
-from kspies import util
+# from pyscf import dft, gto
+# from kspies import util
 
 
 
@@ -38,7 +38,7 @@ def _scf(mol_string,
 
     if potential is not None:
         potential = [psi4.core.Matrix.from_array(i) for i in potential]
-        wfn.iterations(pdft=True, pdft_matrix=potential)
+        wfn.iterations(vp_matrix=potential)
     else:
         wfn.iterations()
     wfn.finalize_energy()
@@ -136,7 +136,6 @@ class Partition():
         """
         Creates basis information for all calculations
         """
-        print("Creating Molecule basis")
         mol = psi4.geometry(self.mol_str)
         basis = psi4.core.BasisSet.build( mol, key='BASIS', target=self.basis_str)
         self.basis = basis
@@ -289,8 +288,8 @@ class Partition():
     def frag_sum(self):
         n_suma = np.zeros( (self.nbf, self.nbf) )
         n_sumb = np.zeros( (self.nbf, self.nbf) )
-        coc_suma = np.zeros( (self.nbf, self.nbf) )
-        coc_sumb = np.zeros( (self.nbf, self.nbf) )
+        coc_suma = np.zeros_like( self.frags[0].Ca_occ )
+        coc_sumb = np.zeros_like( self.frags[0].Ca_occ )
 
         # assert self.nfrags == 2, "Nfrags is different to number of fragments"
 
