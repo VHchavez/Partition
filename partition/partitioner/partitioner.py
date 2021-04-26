@@ -1,19 +1,17 @@
 """
-partition.py
+partitioner.py
 """
 
 import numpy as np
-
 import psi4
 from dask.distributed import Client
 
-from .inverter import Inverter
-from .util import get_from_grid, basis_to_grid #eval_vh
+from ..inverter import Inverter
+from ..fragment import Fragment
+# from .partition import pdft_scf
+# from .util import get_from_grid, basis_to_grid #eval_vh
 
-# from pyscf import dft, gto
-# from kspies import util
-
-
+from ..grid.grider import Grider
 
 from dataclasses import dataclass
 @dataclass
@@ -42,6 +40,11 @@ def _scf(mol_string,
     else:
         wfn.iterations()
     wfn.finalize_energy()
+
+    basis_set = wfn.basisset()
+    mints = psi4.core.MintsHelper(basis_set)
+    T = mints.ao_kinetic()
+    V = mints.ao_potential()
 
 
     # if potential is not None:
@@ -81,6 +84,8 @@ def _scf(mol_string,
     frag_info.Cb       = wfn.Cb().np
     frag_info.Va       = wfn.Va().np
     frag_info.Vb       = wfn.Vb().np
+    frag_info.T        = T.np
+    frag_info.V        = V.np
     frag_info.Ca_occ   = wfn.Ca_subset("AO", "OCC").np
     frag_info.Cb_occ   = wfn.Cb_subset("AO", "OCC").np
     frag_info.Ca_vir   = wfn.Ca_subset("AO", "VIR").np
@@ -93,72 +98,94 @@ def _scf(mol_string,
     return frag_info
 
 
-class Partition():
-    def __init__(self, basis, mol_str, frags_str=None):
+class Partitioner(Grider):
+    def __init__(self, basis, method_str, mol_str, frags_str=[], ref=1):
     
         self.basis_str  = basis
         self.mol_str    = mol_str
+        self.method_str = method_str
         self.mol        = None
         self.frags_str  = frags_str
         self.frags      = None
-        self.nfrags     = 0 if frags_str is None else len( frags_str )
+        self.ref        = ref
+        self.nfrags     = len( frags_str )
         if self.nfrags == 1:
             raise ValueError("Number of fragments cannot be equal to one!")
 
+        self.ens = False
 
         #Client for Paralellization on fragments
-        self.client     = Client()
-
-        #Allocate Core matrices for Fragmetns
-        self.Ts         = []
-        self.Vs         = []
+        # self.client     = Client()
 
         #Generate Basis Set
-        self.build_basis()
-        self.nbf        = self.basis.nbf()
-        self.generate_mints_matrices()
-        self.generate_core_matrices()
+        # self.build_basis()
+        # self.nbf        = self.basis.nbf()
+        # self.generate_mints_matrices()
+        # self.generate_core_matrices()
 
         #Plotting Grid
         self.generate_grid()
 
+        # Generate fragments
+        self.generate_fragments()
+
         #Initial Guess scf
-        self.scf_mol()
-        if self.nfrags != 0:
-            self.scf_frags()
+        # self.scf_mol()
+        # if self.nfrags != 0:
+        #     self.scf_frags()
 
         #Generate invert class
-        self.inverter = Inverter(self)
+        # self.inverter = Inverter(self)
+
+        #Grid information
+        # if ref == 1:
+        #     restricted = (True, "RV")
+        # elif ref == 2:
+        #     restricted = (False, "UV")
+        # else:
+        #     raise ValueError("Only Reference 1 and 2 are available")
+        # functional = psi4.driver.dft.build_superfunctional("SVWN", restricted=restricted[0])[0]
+        # self.vpot = psi4.core.VBase.build(self.basis, functional, restricted[1])
+        # self.vpot.initialize()
 
     ############ METHODS ############
 
-    def build_basis(self):
+    # def build_basis(self):
+    #     """
+    #     Creates basis information for all calculations
+    #     """
+    #     mol = psi4.geometry(self.mol_str)
+    #     basis = psi4.core.BasisSet.build( mol, key='BASIS', target=self.basis_str)
+    #     self.basis = basis
+
+    #     if self.nfrags > 1:
+    #         frags_basis = []
+    #         for i in range(self.nfrags):
+    #             frag   = psi4.geometry( self.frags_str[i] )
+    #             basis = psi4.core.BasisSet.build( frag, key='BASIS', target=self.basis_str)
+    #             frags_basis.append(basis)
+
+    #         self.frags_basis = frags_basis
+
+    # def generate_core_matrices(self):
+    #     mints_mol = psi4.core.MintsHelper( self.basis )
+    #     self.T = mints_mol.ao_kinetic().np.copy()
+    #     self.V = mints_mol.ao_potential().np.copy()
+
+    #     if self.nfrags > 1:
+    #         for i in range(self.nfrags):
+    #             frag_mol = psi4.core.MintsHelper( self.frags_basis[i] )
+    #             self.Ts.append( frag_mol.ao_kinetic().np.copy()   )
+    #             self.Vs.append( frag_mol.ao_potential().np.copy() ) 
+
+
+    def generate_fragments(self):
         """
-        Creates basis information for all calculations
+        Generate instance of Fragment for each fragment string
         """
-        mol = psi4.geometry(self.mol_str)
-        basis = psi4.core.BasisSet.build( mol, key='BASIS', target=self.basis_str)
-        self.basis = basis
-
-        if self.nfrags > 1:
-            frags_basis = []
-            for i in range(self.nfrags):
-                frag   = psi4.geometry( self.frags_str[i] )
-                basis = psi4.core.BasisSet.build( frag, key='BASIS', target=self.basis_str)
-                frags_basis.append(basis)
-
-            self.frags_basis = frags_basis
-
-    def generate_core_matrices(self):
-        mints_mol = psi4.core.MintsHelper( self.basis )
-        self.T = mints_mol.ao_kinetic().np.copy()
-        self.V = mints_mol.ao_potential().np.copy()
-
-        if self.nfrags > 1:
-            for i in range(self.nfrags):
-                frag_mol = psi4.core.MintsHelper( self.frags_basis[i] )
-                self.Ts.append( frag_mol.ao_kinetic().np.copy()   )
-                self.Vs.append( frag_mol.ao_potential().np.copy() ) 
+        self.frags = []
+        for i in self.frags_str:
+            self.frags.append( Fragment(i, self.basis_str, self.method_str) )
 
     def generate_mints_matrices(self):
         mints = psi4.core.MintsHelper( self.basis )
@@ -242,19 +269,25 @@ class Partition():
         K = [Ka, Kb]
 
         return J, K
+
+    def pdft_scf(self):
+        print("I am doing a PDFT calculation!")
+        pdft_scf(self)
+
+    def scf_mol(self):
         
-    def scf_mol(self, 
-               method="svwn"):
-        
+        method = self.method_str
         psi4.set_options({"maxiter" : 100})
         ret = self.client.map( _scf, [self.mol_str], [method], [self.basis_str] )
         data = [i.result() for i in ret]
         self.mol = data[0]
 
     def scf_frags(self,
-            method = "svwn",
+
             vext   = None,
             evaluate = False):
+
+        method = self.method_str
 
         frags     = self.frags_str 
         method_it = [method         for i in range(self.nfrags)]
@@ -289,9 +322,7 @@ class Partition():
         n_suma = np.zeros( (self.nbf, self.nbf) )
         n_sumb = np.zeros( (self.nbf, self.nbf) )
         coc_suma = np.zeros_like( self.frags[0].Ca_occ )
-        coc_sumb = np.zeros_like( self.frags[0].Ca_occ )
-
-        # assert self.nfrags == 2, "Nfrags is different to number of fragments"
+        coc_sumb = np.zeros_like( self.frags[0].Cb_occ )
 
         for i in range(self.nfrags):
             n_suma += self.frags[i].Da
@@ -301,5 +332,37 @@ class Partition():
 
         self.frags_na = n_suma.copy()
         self.frags_nb = n_sumb.copy()
-        self.frags_coca = coc_suma
-        self.frags_cocb = coc_sumb
+        self.frags_coca = coc_suma.copy()
+        self.frags_cocb = coc_sumb.copy()
+
+    def calculate_protomolecule(self):
+        """
+        Calculate the protomolecular density
+        """
+
+        # Evaluate sum of fragment densities and weiging functions
+        
+        self.da_frac = np.zeros_like(self.frags[0].da)
+        if self.ref == 2:
+            self.db_frac = np.zeros_like(self.frags[0].da)
+
+        # Spin flip (?)
+
+        # Scale for ensemble
+        for ifrag in self.frags:
+            self.da_frac += ifrag.da * ifrag.scale
+            if self.ref == 2:
+                self.db_frac += ifrag.db * ifrag.scale
+
+            if self.ens:
+                print("Need to iterate over ensemble set of fragments")
+
+        # Sum of fragment densities
+        self.df = self.da_frac
+        if self.ref == 2:
+            self.df += self.db_frac
+        else:
+            self.df += self.da_frac
+
+        
+
