@@ -4,21 +4,42 @@ partitioner.py
 
 import numpy as np
 import psi4
+from dataclasses import dataclass
+from pydantic import validator, BaseModel
 from dask.distributed import Client
 
 from ..inverter import Inverter
+from ..grid.grider import Grider
 from ..fragment import Fragment
-# from .partition import pdft_scf
+from .pdft_scf import pdft_scf
+
+from .partition_potential import partition_potential
 # from .util import get_from_grid, basis_to_grid #eval_vh
 
-from ..grid.grider import Grider
+class PartitionerOptions(BaseModel):
+    vp_type      : str = 'component'
+    hxc_type     : str = 'exact'
+    kinetic_type : str = 'inversion'
+    k_family     : str = 'gga'
+    plotting_grid : str = 'fine'
+    ke_func_id   : int = 5
+    ke_param     : dict = {}
+    verbose      : bool = True
+    interacting  : bool = True
 
-from dataclasses import dataclass
 @dataclass
 class bucket:
     """
     Basic data class
     """
+    pass
+
+@dataclass
+class V:    
+    pass
+
+@dataclass
+class Plotter:    
     pass
 
 def _scf(mol_string, 
@@ -99,93 +120,145 @@ def _scf(mol_string,
 
 
 class Partitioner(Grider):
-    def __init__(self, basis, method_str, mol_str, frags_str=[], ref=1):
+    def __init__(self, basis, method_str, frags_str=[], ref=1, optPart={}):
+
+        # Validate options
+        optPart = {k.lower(): v for k, v in optPart.items()}
+        for i in optPart.keys():
+            if i not in PartitionerOptions().dict().keys():
+                raise ValueError(f"{i} is not a valid option for Partitioner")
+        optPart = PartitionerOptions(**optPart)
+        self.optPart = optPart
     
         self.basis_str  = basis
-        self.mol_str    = mol_str
+        self.mol_str    = frags_str[0]
         self.method_str = method_str
-        self.mol        = None
         self.frags_str  = frags_str
         self.frags      = None
         self.ref        = ref
         self.nfrags     = len( frags_str )
-        if self.nfrags == 1:
-            raise ValueError("Number of fragments cannot be equal to one!")
+        # if self.nfrags == 1:
+        #     raise ValueError("Number of fragments cannot be equal to one!")
 
         self.ens = False
+
+        # Data buckets
+        self.V = V()
+        self.Plotter = Plotter()
 
         #Client for Paralellization on fragments
         # self.client     = Client()
 
-        #Generate Basis Set
-        # self.build_basis()
-        # self.nbf        = self.basis.nbf()
-        # self.generate_mints_matrices()
-        # self.generate_core_matrices()
-
-        #Plotting Grid
-        self.generate_grid()
+        # Psi4 Stuff
+        self.mol   = psi4.geometry(self.mol_str)
+        self.basis = psi4.core.BasisSet.build( self.mol, key='BASIS', target=self.basis_str)
+        self.nbf   = self.basis.nbf()
+        
+        # Grider & Plotting 
+        self.grid = Grider(self.mol_str, self.basis_str, self.ref, self.optPart.plotting_grid)
 
         # Generate fragments
-        self.generate_fragments()
+        self.generate_fragments(self.optPart.plotting_grid)
+        self.calc_nuclear_potential()
 
-        #Initial Guess scf
-        # self.scf_mol()
-        # if self.nfrags != 0:
-        #     self.scf_frags()
+    # ----> Methods
 
-        #Generate invert class
-        # self.inverter = Inverter(self)
-
-        #Grid information
-        # if ref == 1:
-        #     restricted = (True, "RV")
-        # elif ref == 2:
-        #     restricted = (False, "UV")
-        # else:
-        #     raise ValueError("Only Reference 1 and 2 are available")
-        # functional = psi4.driver.dft.build_superfunctional("SVWN", restricted=restricted[0])[0]
-        # self.vpot = psi4.core.VBase.build(self.basis, functional, restricted[1])
-        # self.vpot.initialize()
-
-    ############ METHODS ############
-
-    # def build_basis(self):
-    #     """
-    #     Creates basis information for all calculations
-    #     """
-    #     mol = psi4.geometry(self.mol_str)
-    #     basis = psi4.core.BasisSet.build( mol, key='BASIS', target=self.basis_str)
-    #     self.basis = basis
-
-    #     if self.nfrags > 1:
-    #         frags_basis = []
-    #         for i in range(self.nfrags):
-    #             frag   = psi4.geometry( self.frags_str[i] )
-    #             basis = psi4.core.BasisSet.build( frag, key='BASIS', target=self.basis_str)
-    #             frags_basis.append(basis)
-
-    #         self.frags_basis = frags_basis
-
-    # def generate_core_matrices(self):
-    #     mints_mol = psi4.core.MintsHelper( self.basis )
-    #     self.T = mints_mol.ao_kinetic().np.copy()
-    #     self.V = mints_mol.ao_potential().np.copy()
-
-    #     if self.nfrags > 1:
-    #         for i in range(self.nfrags):
-    #             frag_mol = psi4.core.MintsHelper( self.frags_basis[i] )
-    #             self.Ts.append( frag_mol.ao_kinetic().np.copy()   )
-    #             self.Vs.append( frag_mol.ao_potential().np.copy() ) 
-
-
-    def generate_fragments(self):
+    def generate_fragments(self, plotting_grid):
         """
         Generate instance of Fragment for each fragment string
         """
+
         self.frags = []
         for i in self.frags_str:
-            self.frags.append( Fragment(i, self.basis_str, self.method_str) )
+            self.frags.append( Fragment(i, self.basis_str, self.method_str, self.ref, plotting_grid) )
+
+    def calc_protomolecule(self):
+        """
+        Calculate the protomolecular density
+        """
+
+        # Evaluate sum of fragment densities and weiging functions
+        
+        self.da_frac = np.zeros_like(self.frags[0].da)
+        if self.ref == 2:
+            self.db_frac = np.zeros_like(self.frags[0].da)
+
+        # Spin flip (?)
+
+        # Scale for ensemble
+        for ifrag in self.frags:
+            self.da_frac += ifrag.da * ifrag.scale
+            if self.ref == 2:
+                self.db_frac += ifrag.db * ifrag.scale
+
+            if self.ens:
+                print("Need to iterate over ensemble set of fragments")
+
+        # Sum of fragment densities
+        self.dfa = self.da_frac
+        if self.ref == 1:
+            self.dfb = self.da_frac.copy()
+        else:
+            self.dfb = self.db_frac
+
+        self.df = self.dfa + self.dfb
+
+    def calc_nuclear_potential(self):
+        """
+        Calculate external nuclear potential
+        """
+
+        vnuc = np.zeros((self.grid.npoints))
+        plot_vnuc = np.zeros((self.grid.plot_npoints))
+
+        for ifrag in self.frags:
+            vnuc       += ifrag.V.vnuc.copy()
+            plot_vnuc  += ifrag.Plotter.vnuc.copy()
+
+        # Plotting Grid
+        self.V.vnuc = vnuc.copy()
+        self.Plotter.vnuc = plot_vnuc.copy()
+            
+
+    def calc_Q(self):
+        """
+        Calculates Q functions according to PDFT
+        """
+
+        np.seterr(divide='ignore', invalid='ignore')
+
+        # Fragment density on the grid
+
+        if self.ref == 1:
+            df = self.grid.density(grid=None, Da=self.dfa, vpot=self.grid.vpot)
+            df = 2 * df
+        else:
+            df = self.grid.density(grid=None, Da=self.dfa, Db=self.dfb, vpot=self.grid.vpot)
+            df = df[:, 0] + df[:, 1]
+
+        for ifrag in self.frags:
+            if self.ref == 1:
+                d = self.grid.density(grid=None, Da=ifrag.da,vpot=self.grid.vpot)
+                d = 2 * d
+            else:
+                d = self.grid.density(grid=None, Da=ifrag.da, Db=ifrag.db, vpot=self.grid.vpot)
+                d = d[:,0] + d[:,1]
+
+            ifrag.Q = ifrag.scale * d / df
+
+            # Need to verify that q functions are functional. 
+
+    def scf(self, maxiter=1):
+        pdft_scf(self, maxiter)
+
+    # ----> Potential Methods
+    def partition_potential(self):
+        partition_potential(self)
+
+
+
+# -----------------------------> OLD PARTITION
+
 
     def generate_mints_matrices(self):
         mints = psi4.core.MintsHelper( self.basis )
@@ -197,13 +270,13 @@ class Partitioner(Grider):
         self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.basis))
         self.jk = None
 
-    def generate_grid(self):
-        coords = []
-        for x in np.linspace(-7, 7, 10001):
-            coords.append((x, 0., 0.))
-        coords = np.array(coords)
+    # def generate_grid(self):
+    #     coords = []
+    #     for x in np.linspace(-7, 7, 10001):
+    #         coords.append((x, 0., 0.))
+    #     coords = np.array(coords)
 
-        self.grid = coords
+    #     self.grid = coords
 
     def axis_plot(self, mat, vpot, blocks):
 
@@ -270,10 +343,6 @@ class Partitioner(Grider):
 
         return J, K
 
-    def pdft_scf(self):
-        print("I am doing a PDFT calculation!")
-        pdft_scf(self)
-
     def scf_mol(self):
         
         method = self.method_str
@@ -335,34 +404,5 @@ class Partitioner(Grider):
         self.frags_coca = coc_suma.copy()
         self.frags_cocb = coc_sumb.copy()
 
-    def calculate_protomolecule(self):
-        """
-        Calculate the protomolecular density
-        """
 
-        # Evaluate sum of fragment densities and weiging functions
-        
-        self.da_frac = np.zeros_like(self.frags[0].da)
-        if self.ref == 2:
-            self.db_frac = np.zeros_like(self.frags[0].da)
-
-        # Spin flip (?)
-
-        # Scale for ensemble
-        for ifrag in self.frags:
-            self.da_frac += ifrag.da * ifrag.scale
-            if self.ref == 2:
-                self.db_frac += ifrag.db * ifrag.scale
-
-            if self.ens:
-                print("Need to iterate over ensemble set of fragments")
-
-        # Sum of fragment densities
-        self.df = self.da_frac
-        if self.ref == 2:
-            self.df += self.db_frac
-        else:
-            self.df += self.da_frac
-
-        
 
