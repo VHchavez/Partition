@@ -13,13 +13,19 @@ from ..grid.grider import Grider
 from ..fragment import Fragment
 from .pdft_scf import pdft_scf
 
+# Partition Methods
 from .partition_potential import partition_potential
+from .vp_kinetic import vp_kinetic
+from .vp_hxc import vp_hxc
 # from .util import get_from_grid, basis_to_grid #eval_vh
 
 class PartitionerOptions(BaseModel):
     vp_type      : str = 'component'
     hxc_type     : str = 'exact'
     kinetic_type : str = 'inversion'
+    hxc_type     : str = 'exact'
+    inv_method   : str = 'wuyang'
+    opt_method   : str = 'bfgs'      
     k_family     : str = 'gga'
     plotting_grid : str = 'fine'
     ke_func_id   : int = 5
@@ -29,15 +35,10 @@ class PartitionerOptions(BaseModel):
 
 @dataclass
 class bucket:
-    """
-    Basic data class
-    """
     pass
-
 @dataclass
 class V:    
     pass
-
 @dataclass
 class Plotter:    
     pass
@@ -137,9 +138,6 @@ class Partitioner(Grider):
         self.frags      = None
         self.ref        = ref
         self.nfrags     = len( frags_str )
-        # if self.nfrags == 1:
-        #     raise ValueError("Number of fragments cannot be equal to one!")
-
         self.ens = False
 
         # Data buckets
@@ -156,10 +154,13 @@ class Partitioner(Grider):
         
         # Grider & Plotting 
         self.grid = Grider(self.mol_str, self.basis_str, self.ref, self.optPart.plotting_grid)
-
+        
         # Generate fragments
         self.generate_fragments(self.optPart.plotting_grid)
         self.calc_nuclear_potential()
+
+        # Inverter 
+        self.inverter = Inverter(self.basis, self.ref, self.frags)
 
     # ----> Methods
 
@@ -199,7 +200,7 @@ class Partitioner(Grider):
         if self.ref == 1:
             self.dfb = self.da_frac.copy()
         else:
-            self.dfb = self.db_frac
+            self.dfb = self.db_frac.copy()
 
         self.df = self.dfa + self.dfb
 
@@ -218,7 +219,6 @@ class Partitioner(Grider):
         # Plotting Grid
         self.V.vnuc = vnuc.copy()
         self.Plotter.vnuc = plot_vnuc.copy()
-            
 
     def calc_Q(self):
         """
@@ -232,20 +232,36 @@ class Partitioner(Grider):
         if self.ref == 1:
             df = self.grid.density(grid=None, Da=self.dfa, vpot=self.grid.vpot)
             df = 2 * df
+
+            #Plotter
+            df_plotter = self.grid.density(Da=self.dfa, grid=self.grid.plot_points)
+            df_plotter = 2 * df_plotter
         else:
             df = self.grid.density(grid=None, Da=self.dfa, Db=self.dfb, vpot=self.grid.vpot)
             df = df[:, 0] + df[:, 1]
 
+            #Plotter
+            df_plotter = self.grid.density(Da=self.dfa, Db=self.dfb, grid=self.grid.plot_points)
+            df_plotter = df_plotter[:,0] + df_plotter[:,1]
+
+        self.Plotter.df = df_plotter
+
         for ifrag in self.frags:
             if self.ref == 1:
-                d = self.grid.density(grid=None, Da=ifrag.da,vpot=self.grid.vpot)
+                d = self.grid.density(grid=None, Da=ifrag.da, vpot=self.grid.vpot)
                 d = 2 * d
+                d_plotter = self.grid.density(Da=ifrag.da, grid=self.grid.plot_points)
+                d_plotter = 2 * d_plotter
             else:
                 d = self.grid.density(grid=None, Da=ifrag.da, Db=ifrag.db, vpot=self.grid.vpot)
                 d = d[:,0] + d[:,1]
+                d_plotter = self.grid.density(Da=ifrag.da, Db=ifrag.db, grid=self.grid.plot_points)
+                d_plotter = d_plotter[:,0] + d_plotter[:,1]
+
+            ifrag.Plotter.d = d_plotter
 
             ifrag.Q = ifrag.scale * d / df
-
+            ifrag.Plotter.Q = ifrag.scale * d_plotter / df_plotter
             # Need to verify that q functions are functional. 
 
     def scf(self, maxiter=1):
@@ -253,10 +269,13 @@ class Partitioner(Grider):
 
     # ----> Potential Methods
     def partition_potential(self):
-        partition_potential(self)
+        return partition_potential(self)
 
+    def vp_kinetic(self):
+        vp_kinetic(self)
 
-
+    def vp_hxc(self):
+        vp_hxc(self)
 # -----------------------------> OLD PARTITION
 
 
@@ -269,50 +288,7 @@ class Partitioner(Grider):
         self.A = A
         self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.basis))
         self.jk = None
-
-    # def generate_grid(self):
-    #     coords = []
-    #     for x in np.linspace(-7, 7, 10001):
-    #         coords.append((x, 0., 0.))
-    #     coords = np.array(coords)
-
-    #     self.grid = coords
-
-    def axis_plot(self, mat, vpot, blocks):
-
-        #Get quantity on the grid
-        mat, xc_grid = basis_to_grid(mat, vpot, blocks=blocks)
-
-        mat_r = []
-        grid_r = []
-
-        for i in range(len(xc_grid[0])):
-            if np.abs(xc_grid[0][i]) < 1e-10 :
-                if np.abs(xc_grid[1][i]) < 1e-10:
-                    grid_r.append( xc_grid[2][i] )
-                    mat_r.append( mat[i] )
-
-        grid_r = np.array( grid_r )
-        mat_r  = np.array( mat_r ) 
-
-        indx = grid_r.argsort()
-        mat_r = mat_r[indx]
-        grid_r = grid_r[indx]
-
-            
-        return grid_r, mat_r
                     
-    def generate_1D_phi(self, atom, target, functional):
-
-        mol = gto.M(atom=atom,
-                    basis=self.basis_str)
-                    
-        pb = dft.numint.eval_ao( mol, self.grid )
-
-        guess_grid = util.eval_vxc(mol, target, functional, self.grid)
-
-        return pb, guess_grid
-
     def generate_jk(self, K=True, memory=2.50e8):
         jk = psi4.core.JK.build(self.basis)
         jk.set_memory(int(memory)) #1GB
