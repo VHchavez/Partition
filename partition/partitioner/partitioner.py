@@ -121,7 +121,7 @@ def _scf(mol_string,
 
 
 class Partitioner(Grider):
-    def __init__(self, basis, method_str, frags_str=[], ref=1, optPart={}):
+    def __init__(self, basis, method_str, frags_str=[], mol_str=None, ref=1, optPart={}):
 
         # Validate options
         optPart = {k.lower(): v for k, v in optPart.items()}
@@ -132,7 +132,7 @@ class Partitioner(Grider):
         self.optPart = optPart
     
         self.basis_str  = basis
-        self.mol_str    = frags_str[0]
+        self.mol_str    = mol_str
         self.method_str = method_str
         self.frags_str  = frags_str
         self.frags      = None
@@ -160,7 +160,8 @@ class Partitioner(Grider):
         self.calc_nuclear_potential()
 
         # Inverter 
-        self.inverter = Inverter(self.basis, self.ref, self.frags)
+        if mol_str is not None:
+            self.inverter = Inverter(self.basis, self.ref, self.frags)
 
     # ----> Methods
 

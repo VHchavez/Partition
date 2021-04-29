@@ -10,6 +10,7 @@ import psi4
 from dataclasses import dataclass
 from pydantic import validator, BaseModel
 
+from ..grid import Grider
 
 @dataclass
 class V: # Implicityly on the basis set
@@ -18,6 +19,13 @@ class V: # Implicityly on the basis set
     vhxc : np.ndarray = np.empty((0,0))
     veff : np.ndarray = np.empty((0,0))
     vkin : np.ndarray = np.empty((0,0))
+    vh   : np.ndarray = np.empty((0,0))
+    vx   : np.ndarray = np.empty((0,0))
+    vc   : np.ndarray = np.empty((0,0))
+
+@dataclass
+class Plotter:
+    pass
 
 @dataclass
 class E:
@@ -38,6 +46,7 @@ class bucket:
 class FragmentOptions(BaseModel):
     functional : str = 'lda'
     fractional : bool = False
+    interaction_type : str = 'dft'
 
 def _scf(mol_string, 
          method='svwn',
@@ -123,7 +132,7 @@ class Fragment():
     # def __repr__(self):
     #     return self.mol_str
 
-    def __init__(self, mol_str, basis, method, optFragment={}):
+    def __init__(self, mol_str, basis, method, ref=1, plotting_grid='fine', optFragment={}):
 
         # Validate options
         optFragment = {k.lower(): v for k, v in optFragment.items()}
@@ -131,17 +140,18 @@ class Fragment():
             if i not in FragmentOptions().dict().keys():
                 raise ValueError(f"{i} is not a valid option for a Fragment")
         optFragment = FragmentOptions(**optFragment)
+        self.optFragment = optFragment
 
         # Identity of molecule
         self.mol_str   = mol_str
         self.basis_str = basis
         self.mol       = psi4.geometry(self.mol_str)
         self.method    = method
-        self.reference = psi4.core.get_global_option("reference")
-        self.ref       = 1 if self.reference == 'RHF' or self.reference == 'RKS' else 2
+        self.ref = ref
 
         self.V = V() # Potential data bucket
         self.E = E() # Energy data bucket
+        self.Plotter = Plotter() # Quantites on grid bucket
 
         # ---_> Machinery to compute the scf
 
@@ -150,6 +160,9 @@ class Fragment():
         self.basis = basis
         self.nbf = self.basis.nbf()
         self.generate_jk()
+
+        # Grid
+        self.grid = Grider(self.mol_str, self.basis_str, self.ref, plotting_grid)
 
         # ----> PDFT 
         # Post SCF
@@ -164,6 +177,8 @@ class Fragment():
         
         # Ensemble
         self.scale = 1.0
+
+        self.calc_nuclear_potential()
 
 
     # ----> Methods
@@ -206,8 +221,55 @@ class Fragment():
 
         return J, K
 
-    def frag_scf(self, 
-                 ext_potential= None,
+    def calc_nuclear_potential(self):        
+        """
+        Calculate external nuclear potential
+        """
+
+        # Grid
+        vext = self.grid.esp( Da=np.zeros((self.nbf, self.nbf)), 
+                              Db=np.zeros((self.nbf, self.nbf)), 
+                              vpot=self.grid.vpot, compute_hartree=False)
+
+        # Plotting Grid
+        plot_vext = self.grid.esp(  Da=np.zeros((self.nbf, self.nbf)), 
+                                    Db=np.zeros((self.nbf, self.nbf)), 
+                                    grid=self.grid.plot_points, compute_hartree=False)
+
+        self.V.vnuc       = vext
+        self.Plotter.vnuc = plot_vext
+
+    def calc_hxc_potential(self):
+        """
+        Calculates Hartree Exchange Correlation Potentials on the Grid
+        """
+
+        if self.optFragment.interaction_type == 'ni':
+            self.vhxc = np.zeros_like(self.V.vnuc)
+
+        if self.optFragment.interaction_type == 'dft':
+
+            # # Get Hartree potential
+            self.V.vnuc, self.V.vh = self.grid.esp(self.da, self.db, self.grid.vpot)
+
+            # # Get exchange correlation potential
+            self.V.vx = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, vpot=self.grid.vpot).T
+            self.V.vc = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, vpot=self.grid.vpot).T
+            self.V.vxc = self.V.vx + self.V.vc
+            self.V.vhxc = self.V.vh + self.V.vx + self.V.vc
+
+
+            # # Plotting components
+            self.Plotter.vnuc, self.Plotter.vh = self.grid.esp(self.da, self.db, grid=self.grid.plot_points)
+            self.Plotter.vx = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, grid=self.grid.plot_points).T
+            self.Plotter.vc = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, grid=self.grid.plot_points).T
+            self.Plotter.vxc = self.Plotter.vx + self.Plotter.vc
+            self.Plotter.vhxc = self.Plotter.vh + self.Plotter.vx + self.Plotter.vc
+
+            pass
+
+    def scf(self, 
+                 vext= None,
                  maxiter=50):
 
         # Clean Psi4 variables
@@ -220,8 +282,8 @@ class Fragment():
         wfn = psi4.proc.scf_wavefunction_factory(self.method, wfn_base, "UKS")
         wfn.initialize()
 
-        if ext_potential is not None:
-            wfn.iterations(vp_matrix=potential)
+        if vext is not None:
+            wfn.iterations(vp_matrix=vext)
         else:
             wfn.iterations()
         wfn.finalize_energy()
@@ -233,8 +295,8 @@ class Fragment():
 
         # Allocate T and V inside fragment
         # Do if statement to just calculate once
-        self.V.vnuc = V.np
-        self.V.vkin = T.np
+        self.V.Vnm = V.np
+        self.V.Tnm = T.np
         self.nalpha = wfn.nalpha()
         self.nbeta  = wfn.nbeta()
 
@@ -247,8 +309,6 @@ class Fragment():
         self.E.e2  = wfn.get_energies('Two-Electron')
         self.E.exc = wfn.get_energies('XC')
         self.E.et  = wfn.get_energies("Total Energy")
-
-        print(f"Fragment Energy: {self.E.et}")
 
         # Store PostSCF Quantites
         self.da = np.array(wfn.Da()).copy()
@@ -265,42 +325,3 @@ class Fragment():
         # Potentials
         self.V.Vxc_a = np.array(wfn.Va()).copy()
         self.V.Vxc_b = np.array(wfn.Vb()).copy()
-
-        # #Paste results to pdf_fragment
-        # energies = {"enuc" : wfn.get_energies('Nuclear'),
-        #             "e1"   : wfn.get_energies('One-Electron'),
-        #             "e2"   : wfn.get_energies('Two-Electron'),
-        #             "exc"  : wfn.get_energies('XC'),
-        #             "total": wfn.get_energies('Total Energy')
-        #             }
-    
-        # frag_info.geometry = mol.geometry().np
-        # frag_info.natoms   = mol.natom()
-        # frag_info.nalpha   = wfn.nalpha()
-        # frag_info.nbeta    = wfn.nbeta()
-        # frag_info.mol_str  = self.mol_str
-        # frag_info.Da       = wfn.Da().np
-        # frag_info.Db       = wfn.Db().np
-        # frag_info.Ca       = wfn.Ca().np
-        # frag_info.Cb       = wfn.Cb().np
-        # frag_info.Va       = wfn.Va().np
-        # frag_info.Vb       = wfn.Vb().np
-        # frag_info.T        = T.np
-        # frag_info.V        = V.np
-        # frag_info.Ca_occ   = wfn.Ca_subset("AO", "OCC").np
-        # frag_info.Cb_occ   = wfn.Cb_subset("AO", "OCC").np
-        # frag_info.Ca_vir   = wfn.Ca_subset("AO", "VIR").np
-        # frag_info.Cb_vir   = wfn.Cb_subset("AO", "VIR").np
-        # frag_info.eig_a    = wfn.epsilon_a().np
-        # frag_info.eig_b    = wfn.epsilon_b().np
-        # frag_info.energies = energies
-        # frag_info.energy   = wfn.get_energies('Total Energy')
-
-        # return frag_info
-
-
-        # method = self.method_str
-        # psi4.set_options({"maxiter" : 100})
-        # ret = self.client.map( _scf, [self.mol_str], [method], [self.basis_str] )
-        # data = [i.result() for i in ret]
-        # self.mol = data[0]
