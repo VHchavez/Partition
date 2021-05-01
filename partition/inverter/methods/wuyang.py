@@ -29,7 +29,7 @@ class WuYang():
                                     x0  = self.v0, 
                                     jac = self.pdft_gradient,
                                     method = self.opt_method,
-                                    tol    = 1e-4,
+                                    tol    = 1e-8,
                                     options = {"maxiter" : self.maxiter,
                                                "disp"    : False,}
                                     )
@@ -40,7 +40,7 @@ class WuYang():
                                     jac = self.pdft_gradient,
                                     hess = self.wy_hessian,
                                     method = self.opt_method,
-                                    tol    = 1e-4,
+                                    tol    = 1e-8,
                                     options = {"maxiter" : self.maxiter,
                                                "disp"    : False, }
                                     )
@@ -76,19 +76,28 @@ class WuYang():
         self.vp_b = vp_b.copy()
 
         #Invert single molecular problem
-        if False:
+        if True:
             # Do a simple scf calculation. 
-            da = self.diagonalize(self.T + vp_a, self.nalpha )[2]
-            db = self.diagonalize(self.T + vp_b, self.nbeta  )[2]       
+            da = self.diagonalize(self.T + self.V + vp_a, self.nalpha )[2]
+            db = self.diagonalize(self.T + self.V + vp_b, self.nbeta  )[2]       
+
+            # This has to go in both versions
+            self.grad_a = np.einsum('ij,ijt->t', (da-self.dt[0]), self.S3)
+            self.grad_b = np.einsum('ij,ijt->t', (db-self.dt[1]), self.S3) 
+            optz       = np.einsum('t,t', v[:self.nauxbf], self.grad_a)
+            optz      += np.einsum('t,t', v[self.nauxbf:], self.grad_b)
+            grad_value = np.max(self.grad_a + self.grad_b)
+
             # Calculate Energy components
             kinetic   = np.sum(self.T * (da+db) )
             potential = np.sum((self.V) * (da+db - self.dt[0] - self.dt[1]) )
 
             grad_value = np.max( self.grad_a + self.grad_b )
-            print(f"Kinetic: {kinetic:4.10} + Potential:{potential:4.10} | Optimization: {optz:4.10} | Gradient {grad_value:4.10}" )
+            print(f"Kinetic: {kinetic:6.10f} + Potential:{potential:6.10f} | Optimization: {optz:6.10f} | Gradient {grad_value:6.10f}" )
             L = kinetic  + potential + optz
         
-        if True:
+        #Invert as fragment molecules
+        if False:
             da = np.zeros_like(self.dt[0])
             db = np.zeros_like(self.dt[0])
 
@@ -97,25 +106,22 @@ class WuYang():
                 da += ifrag.da.copy()
                 db += ifrag.db.copy()
 
-
             # This has to go in both versions
             self.grad_a = np.einsum('ij,ijt->t', (da-self.dt[0]), self.S3)
             self.grad_b = np.einsum('ij,ijt->t', (db-self.dt[1]), self.S3) 
+            grad_value = np.max(self.grad_a + self.grad_b)
 
             frag_energies = 0.0
             for i in range(self.nfrags):
                 frag_energies += self.frags[i].E.et
 
-            grad_value = np.max(self.grad_a + self.grad_b)
-            print(f" Grad: {grad_value:4.10f}, Frags E: {frag_energies:4.10f}, Optimization: {optz:4.10f}, total_L: { frag_energies + optz}")
-
-            L = frag_energies + optz
-
-            # Is this optimization the same as the integral??
+            # This has to go in both versions
             optz       = np.einsum('t,t', v[:self.nauxbf], self.grad_a)
             optz      += np.einsum('t,t', v[self.nauxbf:], self.grad_b)
 
+            print(f" Grad: {grad_value:4.10f}, Frags E: {frag_energies:4.10f}, Optimization: {optz:4.10f}, total_L: { frag_energies + optz}")
 
+            L = frag_energies + optz
 
         penalty = 0.0
         # if self.reg > 0:
