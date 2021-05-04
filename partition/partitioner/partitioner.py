@@ -161,7 +161,7 @@ class Partitioner(Grider):
 
         # Inverter 
         if mol_str is not None:
-            self.inverter = Inverter(self.basis, self.ref, self.frags)
+            self.inverter = Inverter(self.mol, self.basis, self.ref, self.frags, self.grid)
 
     # ----> Methods
 
@@ -290,35 +290,35 @@ class Partitioner(Grider):
         self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.basis))
         self.jk = None
                     
-    def generate_jk(self, K=True, memory=2.50e8):
-        jk = psi4.core.JK.build(self.basis)
-        jk.set_memory(int(memory)) #1GB
-        jk.set_do_K(K)
-        jk.initialize()
+    # def generate_jk(self, K=True, memory=2.50e8):
+    #     jk = psi4.core.JK.build(self.basis)
+    #     jk.set_memory(int(memory)) #1GB
+    #     jk.set_do_K(K)
+    #     jk.initialize()
 
-        self.jk = jk
+    #     self.jk = jk
 
-    def form_jk(self, C_occ_a, C_occ_b):
-        if self.jk is None:
-            self.generate_jk()
+    # def form_jk(self, C_occ_a, C_occ_b):
+    #     if self.jk is None:
+    #         self.generate_jk()
 
-        # C_occ_a = psi4.core.Matrix.from_array(C_occ_a)
-        # C_occ_b = psi4.core.Matrix.from_array(C_occ_b)
+    #     # C_occ_a = psi4.core.Matrix.from_array(C_occ_a)
+    #     # C_occ_b = psi4.core.Matrix.from_array(C_occ_b)
 
-        self.jk.C_left_add(C_occ_a)
-        self.jk.C_left_add(C_occ_b)
-        self.jk.compute()
-        self.jk.C_clear()
+    #     self.jk.C_left_add(C_occ_a)
+    #     self.jk.C_left_add(C_occ_b)
+    #     self.jk.compute()
+    #     self.jk.C_clear()
 
-        Ja = self.jk.J()[0].np
-        Jb = self.jk.J()[1].np
-        J = [Ja, Jb]
+    #     Ja = self.jk.J()[0].np
+    #     Jb = self.jk.J()[1].np
+    #     J = [Ja, Jb]
 
-        Ka = self.jk.K()[0].np
-        Kb = self.jk.K()[1].np
-        K = [Ka, Kb]
+    #     Ka = self.jk.K()[0].np
+    #     Kb = self.jk.K()[1].np
+    #     K = [Ka, Kb]
 
-        return J, K
+    #     return J, K
 
     def scf_mol(self):
         

@@ -13,7 +13,8 @@ from opt_einsum import contract
 # from pyscf import scf
 
 from .methods.wuyang import WuYang
-from .methods.mrks import MRKS
+# from .methods.mrks import MRKS
+from .methods.oucarter import Oucarter
 
 # from .util import to_grid, basis_to_grid, get_from_grid
 
@@ -23,9 +24,9 @@ import sys
 class InverterOptions(BaseModel):
     verbose : bool = True
 
-class Inverter(WuYang, MRKS):
+class Inverter(WuYang, Oucarter):
 
-    def __init__(self, basis, ref, frags, optInv={}):
+    def __init__(self, mol, basis, ref, frags, grid=None, jk=None, optInv={}):
 
         # Validate options
         optInv = {k.lower(): v for k, v in optInv.items()}
@@ -35,9 +36,16 @@ class Inverter(WuYang, MRKS):
         optInv = InverterOptions(**optInv)
         self.optInv = optInv
 
-        self.basis    = basis
+        self.mol       = mol
+        self.basis     = basis
+        self.basis_str = self.basis.name()
         mints = psi4.core.MintsHelper( self.basis )
         self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.basis))
+        A = mints.ao_overlap()
+        A.power( -0.5, 1e-16 )
+        self.A = np.array(A)
+        self.T = np.array(mints.ao_kinetic())
+        self.V = np.array(mints.ao_potential())
 
         self.nbf      = self.basis.nbf()
         self.nauxbf   = self.basis.nbf()
@@ -58,8 +66,10 @@ class Inverter(WuYang, MRKS):
         self.dt = None
 
         #Inverted Potential
-        self.v = np.zeros( 2 * self.nauxbf )
-
+        self.v0 = np.zeros( 2 * self.nauxbf )
+        
+        self.grid = grid
+        self.jk   = jk
         # if self.ref == 1:
         #     self.v = np.zeros( 1 * self.nauxbf )
         # else:
@@ -94,6 +104,11 @@ class Inverter(WuYang, MRKS):
 
         if method.lower() == "wuyang":
             self.wuyang_invert(opt_method=opt_method, initial_guess='none')
+
+        if method.lower() == 'oucarter':
+
+            vxc_dft, vxc_plotter = self.oucarter(15, self.grid.plot_points)
+            return vxc_dft, vxc_plotter
 
     def initial_guess(self, guess):
         """
@@ -140,3 +155,34 @@ class Inverter(WuYang, MRKS):
         #             fa =  (1 - 1.0 / N) * (J[0] + J[1])
         #             self.va = fa
         #             self.vb = fa
+
+    
+    def generate_jk(self, K=True, memory=2.50e8):
+        jk = psi4.core.JK.build(self.basis)
+        jk.set_memory(int(memory)) #1GB
+        jk.set_do_K(K)
+        jk.initialize()
+
+        self.jk = jk
+
+    def form_jk(self, C_occ_a, C_occ_b):
+        if self.jk is None:
+            self.generate_jk()
+
+        C_occ_a = psi4.core.Matrix.from_array(C_occ_a)
+        C_occ_b = psi4.core.Matrix.from_array(C_occ_b)
+
+        self.jk.C_left_add(C_occ_a)
+        self.jk.C_left_add(C_occ_b)
+        self.jk.compute()
+        self.jk.C_clear()
+
+        Ja = self.jk.J()[0].np
+        Jb = self.jk.J()[1].np
+        J = [Ja, Jb]
+
+        Ka = self.jk.K()[0].np
+        Kb = self.jk.K()[1].np
+        K = [Ka, Kb]
+
+        return J, K
