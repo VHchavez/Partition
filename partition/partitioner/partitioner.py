@@ -2,6 +2,8 @@
 partitioner.py
 """
 
+from copy import copy 
+
 import numpy as np
 import psi4
 from dataclasses import dataclass
@@ -290,36 +292,6 @@ class Partitioner(Grider):
         self.S3 = np.squeeze(mints.ao_3coverlap(self.basis,self.basis,self.basis))
         self.jk = None
                     
-    # def generate_jk(self, K=True, memory=2.50e8):
-    #     jk = psi4.core.JK.build(self.basis)
-    #     jk.set_memory(int(memory)) #1GB
-    #     jk.set_do_K(K)
-    #     jk.initialize()
-
-    #     self.jk = jk
-
-    # def form_jk(self, C_occ_a, C_occ_b):
-    #     if self.jk is None:
-    #         self.generate_jk()
-
-    #     # C_occ_a = psi4.core.Matrix.from_array(C_occ_a)
-    #     # C_occ_b = psi4.core.Matrix.from_array(C_occ_b)
-
-    #     self.jk.C_left_add(C_occ_a)
-    #     self.jk.C_left_add(C_occ_b)
-    #     self.jk.compute()
-    #     self.jk.C_clear()
-
-    #     Ja = self.jk.J()[0].np
-    #     Jb = self.jk.J()[1].np
-    #     J = [Ja, Jb]
-
-    #     Ka = self.jk.K()[0].np
-    #     Kb = self.jk.K()[1].np
-    #     K = [Ka, Kb]
-
-    #     return J, K
-
     def scf_mol(self):
         
         method = self.method_str
@@ -381,5 +353,59 @@ class Partitioner(Grider):
         self.frags_coca = coc_suma.copy()
         self.frags_cocb = coc_sumb.copy()
 
+    def mirror_ab(self, iter_zero=False):
+        ### Mirrors:
+        # Density, Q, vx, vc, vh, vp
+        x,y,z,_ = self.grid.vpot.get_np_xyzw()
+        ive_been_flipped = [ False for i in range(len(x)) ]
+        
+        if self.ref == 1:
+            density = self.grid.density(Da=self.frags[0].da, vpot=self.grid.vpot)
+        else:
+            density = self.grid.density(Da=self.frags[0].da, Db=self.frags[0].da, vpot=self.grid.vpot)
+
+        flip_d  =  np.zeros_like(x)
+        self.frags[1].Q     =  np.zeros_like(x)
+        self.frags[1].V.vx  =  np.zeros_like(x)
+        self.frags[1].V.vc  =  np.zeros_like(x)
+        self.frags[1].V.vh  =  np.zeros_like(x)
+        self.frags[1].V.vp  =  np.zeros_like(x)
+        
+        # Go through all points
+        for i in range(len(x)):
+
+            # Find the other point mirroring along the zaxis
+            flipid = np.intersect1d( np.intersect1d( np.where(x == x[i])[0], np.where(y == y[i])[0]), np.where(z == -z[i])[0] )[0]
+
+            # Replace both points
+            if not ive_been_flipped[i]:
+
+                flip_d[flipid] = copy(density[i])                          # Density
+                flip_d[i]      = copy(density[flipid])
+
+                if not iter_zero:
+                    self.frags[1].Q[flipid]    = copy(self.frags[0].Q[i])       # Q
+                    self.frags[1].Q[i]         = copy(self.frags[0].Q[flipid])
+
+                    self.frags[1].V.vx[flipid] = copy(self.frags[0].vx[i])       # Exchange
+                    self.frags[1].V.vx[i]      = copy(self.frags[0].vx[flipid])
+
+                    self.frags[1].V.vc[flipid] = copy(self.frags[0].vc[i])       # Correlation
+                    self.frags[1].V.vc[i]      = copy(self.frags[0].vc[flipid])
+
+                    self.frags[1].V.vh[flipid] = copy(self.frags[0].vh[i])       # Hartree
+                    self.frags[1].V.vh[i]      = copy(self.frags[0].vh[flipid])
+
+                ive_been_flipped[i]      = True
+                ive_been_flipped[flipid] = True
+
+        self.density_zero = density.copy()
+        self.density_inv  = flip_d.copy() 
+                
+        if self.ref == 1:
+            self.frags[1].da = self.dft_grid_to_fock( flip_d, Vpot=self.grid.vpot )
+            self.frags[1].db = self.frags[1].da.copy()
+        else:
+            self.frags[1].db = self.dft_grid_to_fock( flip_d, Vpot=self.grid.vpot )
 
 
