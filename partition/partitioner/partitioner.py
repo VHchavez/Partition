@@ -14,6 +14,8 @@ from ..inverter import Inverter
 from ..grid.grider import Grider
 from ..fragment import Fragment
 from .pdft_scf import pdft_scf
+from .energy import energy
+from .partition_energy import partition_energy
 
 # Partition Methods
 from .partition_potential import partition_potential
@@ -182,28 +184,44 @@ class Partitioner(Grider):
         """
 
         # Evaluate sum of fragment densities and weiging functions
-        
-        self.da_frac = np.zeros_like(self.frags[0].da)
-        if self.ref == 2:
-            self.db_frac = np.zeros_like(self.frags[0].da)
+        if not self.ens:
+            ifrag = self.frags
+        else:
+            pass
+            #ifrag = self.frags self.efrags
+            # union de fragmentos y efragmetnos
 
-        # Spin flip (?)
+        # Initialize fractional densities
+        for i in ifrag:
+            i.da_frac = np.zeros_like( i.da )
+            if self.ref == 2:
+                i.db_frac = np.zeros_like( i.db )
+            else:
+                i.db_frac = i.da_frac.copy()
+
+        # Spinflip (?)
 
         # Scale for ensemble
-        for ifrag in self.frags:
-            self.da_frac += ifrag.da * ifrag.scale
+        for i in ifrag:
+            i.da_frac += i.da * i.scale
             if self.ref == 2:
-                self.db_frac += ifrag.db * ifrag.scale
-
-            if self.ens:
-                print("Need to iterate over ensemble set of fragments")
+                i.db_frac += i.db * i.scale
+            else:
+                i.db_frac = i.da_frac.copy()
 
         # Sum of fragment densities
-        self.dfa = self.da_frac
-        if self.ref == 1:
-            self.dfb = self.da_frac.copy()
+        self.dfa = np.zeros_like( self.frags[0].da )
+        if self.ref == 2:
+            self.dfb = np.zeros_like( self.frags[0].da )
         else:
-            self.dfb = self.db_frac.copy()
+            self.dfb = self.dfa.copy()
+
+        for i in ifrag:
+            self.dfa += i.da_frac
+            if self.ref == 2:
+                self.dfb += i.db_frac
+            else:
+                self.dfb = self.dfa.copy()
 
         self.df = self.dfa + self.dfb
 
@@ -279,6 +297,19 @@ class Partitioner(Grider):
 
     def vp_hxc(self):
         vp_hxc(self)
+
+    # ----> Energy Methods
+    def energy(self):
+        """
+        Gathers energies from all fragments
+        """
+        energy(self)
+
+    def energy(self):
+        """
+        Calculates the partition energy of the system
+        """
+        partition_energy(self)
 # -----------------------------> OLD PARTITION
 
 
