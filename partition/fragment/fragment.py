@@ -4,6 +4,7 @@ Handles individual fragment informations.
 Behaves like a KohnSham object in pyCADMium
 """
 from types import MethodDescriptorType
+from copy import copy
 
 import numpy as np
 import psi4
@@ -171,7 +172,7 @@ class Fragment():
         self.u = None #Chemical potential
         
         # PDFT
-        self.Q = np.empty((self.nbf, self.nbf))
+        self.Q = np.empty((self.grid.npoints))
         self.Alpha = None
         self.Beta  = None
         
@@ -182,14 +183,6 @@ class Fragment():
 
 
     # ----> Methods
-    # def build_basis(self):
-    #     """
-    #     Creates basis information for fragment
-    #     """
-    #     # mol = psi4.geometry(self.mol_str)
-    #     basis = psi4.core.BasisSet.build( self.mol, key='BASIS', target=self.basis_str)
-    #     self.basis = basis
-
 
     def generate_jk(self, K=True, memory=2.50e8):
         jk = psi4.core.JK.build(self.basis)
@@ -273,9 +266,9 @@ class Fragment():
                  maxiter=50):
 
         # Clean Psi4 variables
-        psi4.core.clean()
-        psi4.core.clean_options()
-        psi4.core.clean_variables()
+        # psi4.core.clean()
+        # psi4.core.clean_options()
+        # psi4.core.clean_variables()
 
         mol = psi4.geometry(self.mol_str)
         wfn_base = psi4.core.Wavefunction.build(mol, self.basis_str)
@@ -295,20 +288,13 @@ class Fragment():
 
         # Allocate T and V inside fragment
         # Do if statement to just calculate once
-        self.V.Vnm = V.np
-        self.V.Tnm = T.np
+        self.V.Vnm = np.array(V).copy()
+        self.V.Tnm = np.array(T).copy()
         self.nalpha = wfn.nalpha()
         self.nbeta  = wfn.nbeta()
 
         # if potential is not None:
         #     exc = generate_exc( mol_string, basis, wfn.Da().np )
-
-        # Store Energies
-        self.E.ext = wfn.get_energies('Nuclear')
-        self.E.e1  = wfn.get_energies('One-Electron')
-        self.E.e2  = wfn.get_energies('Two-Electron')
-        self.E.exc = wfn.get_energies('XC')
-        self.E.et  = wfn.get_energies("Total Energy")
 
         # Store PostSCF Quantites
         self.da = np.array(wfn.Da()).copy()
@@ -322,6 +308,27 @@ class Fragment():
         self.eigs_a = np.array(wfn.epsilon_a()).copy()
         self.eigs_b = np.array(wfn.epsilon_b()).copy()
 
+        
+        # Store Energies
+        self.E.Enuc = wfn.get_energies('Nuclear')      # Nuclear Repulsion Energy
+        self.E.Ekin = np.sum( (self.da + self.db) * T )
+        self.E.Eext = np.sum( (self.da + self.db) * V )
+        # self.E.e1  = wfn.get_energies('One-Electron')  # Nuclear/External + Kinetic
+        # self.E.Ts  = self.E.e1 - self.E.Enuc           # Kinetic
+        self.E.Evha = wfn.get_energies('Two-Electron')   # Hartree/Exchange Energy
+        self.E.Evxc = wfn.get_energies('XC')             # Exchange correlation energy
+        self.E.Etot = wfn.get_energies("Total Energy")   # Total electronic (?)
+
+        if vext is None:
+            self.E.E0 = copy(self.E.Etot)                # Isolated fragments without vp
+
         # Potentials
         self.V.Vxc_a = np.array(wfn.Va()).copy()
         self.V.Vxc_b = np.array(wfn.Vb()).copy()
+
+    def energy(self):
+        """
+        Gathers energy of each fragment
+        """
+
+        # 
