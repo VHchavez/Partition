@@ -21,6 +21,11 @@ from .methods.oucarter import Oucarter
 import psi4
 import sys
 
+@dataclass
+class Plotter:    
+    pass
+
+
 class InverterOptions(BaseModel):
     verbose : bool = True
 
@@ -68,6 +73,7 @@ class Inverter(WuYang, Oucarter):
         #Inverted Potential
         self.v0 = np.zeros( 2 * self.nauxbf )
         
+        self.Plotter = Plotter()
         self.grid = grid
         self.jk   = jk
         # if self.ref == 1:
@@ -107,7 +113,7 @@ class Inverter(WuYang, Oucarter):
 
         if method.lower() == 'oucarter':
 
-            vxc_dft, vxc_plotter = self.oucarter(15, self.grid.plot_points)
+            vxc_dft, vxc_plotter = self.oucarter(5, self.grid.plot_points)
             return vxc_dft, vxc_plotter
 
     def initial_guess(self, guess):
