@@ -30,12 +30,19 @@ class Plotter:
 
 @dataclass
 class E:
-    E   : float = 0.0
-    Ec  : float = 0.0
-    Ex  : float = 0.0
-    Exc : float = 0.0
-    Eks : np.ndarray = np.empty((0,0)) 
-    Vks : np.ndarray = np.empty((0,0))
+    kin  : float = 0.0
+    ext  : float = 0.0
+    har  : float = 0.0
+    xc   : float = 0.0
+    nuc  : float = 0.0
+    tot  : float = 0.0
+    E0   : float = 0.0
+    # E   : float = 0.0
+    # Ec  : float = 0.0
+    # Ex  : float = 0.0
+    # Exc : float = 0.0
+    # Eks : np.ndarray = np.empty((0,0)) 
+    # Vks : np.ndarray = np.empty((0,0))
 
 @dataclass
 class bucket:
@@ -218,6 +225,7 @@ class Fragment():
         """
         Calculate external nuclear potential
         """
+        print("\tCalculating External Potential")
 
         # Grid
         vext = self.grid.esp( Da=np.zeros((self.nbf, self.nbf)), 
@@ -242,18 +250,31 @@ class Fragment():
 
         if self.optFragment.interaction_type == 'dft':
 
-            # # Get Hartree potential
-            self.V.vnuc, self.V.vh = self.grid.esp(self.da, self.db, self.grid.vpot)
+            # # Hartree External on DFT Grid
+            # if self.ref == 2:
+            #     self.V.vh         = np.zeros((2,self.grid.npoints))
+            #     self.V.vnuc       = np.zeros((2,self.grid.npoints))
+            #     self.Plotter.vh   = np.zeros((2, self.grid.plot_npoints)) 
+            #     self.Plotter.vnuc = np.zeros((2, self.grid.plot_npoints))
 
-            # # Get exchange correlation potential
+            #     self.V.vnuc[0,:], self.V.vh[0,:] = self.grid.esp( self.da, np.zeros_like(self.db), self.grid.vpot )
+            #     self.V.vnuc[1,:], self.V.vh[1,:] = self.grid.esp( self.db, np.zeros_like(self.da), self.grid.vpot )
+                
+            #     # Plotting grid
+            #     self.Plotter.vnuc[0,:], self.Plotter.vh[0,:] = self.grid.esp( self.da, np.zeros_like(self.db), grid=self.grid.plot_points )
+            #     self.Plotter.vnuc[1,:], self.Plotter.vh[1,:] = self.grid.esp( self.db, np.zeros_like(self.db), grid=self.grid.plot_points )
+            
+            # else:
+            self.V.vnuc, self.V.vh = self.grid.esp(self.da, self.db, self.grid.vpot)
+            self.Plotter.vnuc, self.Plotter.vh = self.grid.esp(self.da, self.db, grid=self.grid.plot_points)
+
+            # Exchange/Correlation on DFT grid
             self.V.vx = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, vpot=self.grid.vpot).T
             self.V.vc = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, vpot=self.grid.vpot).T
             self.V.vxc = self.V.vx + self.V.vc
             self.V.vhxc = self.V.vh + self.V.vx + self.V.vc
 
-
             # # Plotting components
-            self.Plotter.vnuc, self.Plotter.vh = self.grid.esp(self.da, self.db, grid=self.grid.plot_points)
             self.Plotter.vx = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, grid=self.grid.plot_points).T
             self.Plotter.vc = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, grid=self.grid.plot_points).T
             self.Plotter.vxc = self.Plotter.vx + self.Plotter.vc
