@@ -16,6 +16,7 @@ from ..fragment import Fragment
 from .pdft_scf import pdft_scf
 from .energy import energy
 from .partition_energy import partition_energy
+from .ep_kinetic import ep_kinetic
 
 # Partition Methods
 from .partition_potential import partition_potential
@@ -45,6 +46,9 @@ class V:
     pass
 @dataclass
 class Plotter:    
+    pass
+@dataclass
+class E:
     pass
 
 def _scf(mol_string, 
@@ -146,15 +150,45 @@ class Partitioner(Grider):
 
         # Data buckets
         self.V = V()
+        self.E = E()
         self.Plotter = Plotter()
 
         #Client for Paralellization on fragments
         # self.client     = Client()
 
-        # Psi4 Stuff
+        # Full Molecule
         self.mol   = psi4.geometry(self.mol_str)
-        self.basis = psi4.core.BasisSet.build( self.mol, key='BASIS', target=self.basis_str)
+        _, mol_wfn = psi4.energy(self.method_str+'/'+self.basis_str, molecule=self.mol, return_wfn=True)
+        self.basis = mol_wfn.basisset()
         self.nbf   = self.basis.nbf()
+        self.mints = psi4.core.MintsHelper( self.basis )
+        A = self.mints.ao_overlap()
+        A.power( -0.5, 1e-16 )
+        self.A = np.array(A)
+        self.Tnm = self.mints.ao_kinetic()
+        self.Vnm = self.mints.ao_potential()
+        self.I = self.mints.ao_eri()
+
+        # self.basis = psi4.core.BasisSet.build( self.mol, key='BASIS', target=self.basis_str)
+        
+        # Full molecule
+        self.molE = E()
+        self.molE.Evxc = mol_wfn.get_energies("XC")
+        self.molE.Evha = mol_wfn.get_energies("Two-Electron")
+        self.molE.Etot = mol_wfn.get_energies("Total Energy")
+        self.molE.Enuc = mol_wfn.get_energies("Nuclear")
+        self.molE.Ekin = np.sum( self.Tnm * ( np.array(mol_wfn.Da()) + np.array(mol_wfn.Db()) ) )
+        self.molE.Eext = np.sum( self.Vnm * ( np.array(mol_wfn.Da()) + np.array(mol_wfn.Db()) ) )
+
+        mole = self.molE
+        assert np.isclose( mole.Evxc + mole.Evha + mole.Enuc + mole.Ekin + mole.Eext, self.molE.Etot)
+
+        self.molSCF = V()
+        self.molSCF.da = np.array(mol_wfn.Da())
+        self.molSCF.db = np.array(mol_wfn.Db())
+        self.molSCF.ca = np.array( mol_wfn.Ca_subset("AO", "ALL"))
+        self.molSCF.cb = np.array( mol_wfn.Cb_subset("AO", "ALL"))
+
         
         # Grider & Plotting 
         self.grid = Grider(self.mol_str, self.basis_str, self.ref, self.optPart.plotting_grid)
@@ -166,6 +200,12 @@ class Partitioner(Grider):
         # Inverter 
         if mol_str is not None:
             self.inverter = Inverter(self.mol, self.basis, self.ref, self.frags, self.grid)
+
+        # Full Molecule
+        # self.basis = psi4.core.BasisSet.build( self.mol, "ORBITAL", self.basis_str, quiet=True )
+
+
+
 
     # ----> Methods
 
@@ -217,9 +257,9 @@ class Partitioner(Grider):
             self.dfb = self.dfa.copy()
 
         for i in ifrag:
-            self.dfa += i.da_frac
+            self.dfa += i.da_frac #+ i.db_frac
             if self.ref == 2:
-                self.dfb += i.db_frac
+                self.dfb += i.db_frac #+ i.da_frac
             else:
                 self.dfb = self.dfa.copy()
 
@@ -281,9 +321,20 @@ class Partitioner(Grider):
 
             ifrag.Plotter.d = d_plotter
 
-            ifrag.Q = ifrag.scale * d / df
-            ifrag.Plotter.Q = ifrag.scale * d_plotter / df_plotter
+            ifrag.Q = (ifrag.scale * d / df)[None,:]
+            ifrag.Plotter.Q = (ifrag.scale * d_plotter / df_plotter)[None,:]
             # Need to verify that q functions are functional. 
+
+    def diagonalize(self, matrix, ndocc):
+        A = self.A
+        Fp = A.dot(matrix).dot(A)
+        eigvecs, Cp = np.linalg.eigh(Fp)
+        C = A.dot(Cp)
+        Cocc = C[:, :ndocc]
+        D = contract('pi,qi->pq', Cocc, Cocc)
+
+        print("Diagonalizing", C.shape, Cocc.shape)
+        return C, Cocc, D, eigvecs
 
     def scf(self, maxiter=1):
         pdft_scf(self, maxiter)
@@ -310,6 +361,12 @@ class Partitioner(Grider):
         Calculates the partition energy of the system
         """
         partition_energy(self)
+
+    def ep_kinetic(self):
+        """
+        Calculates ep_kinetic per fragment
+        """
+        ep_kinetic(self)
 # -----------------------------> OLD PARTITION
 
 
