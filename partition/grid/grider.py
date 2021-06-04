@@ -27,6 +27,7 @@ class Grider(Cubeprop):
         self.mol_str = mol_str
         self.mol = psi4.geometry(mol_str)
         self.basis = psi4.core.BasisSet.build( self.mol, key='BASIS', target=basis_str)
+        self.nbf   = self.basis.nbf()
 
         # clean wfn
         wfn_base = psi4.core.Wavefunction.build(self.mol, basis_str)
@@ -43,19 +44,19 @@ class Grider(Cubeprop):
         self.npoints = self.vpot.grid().npoints()
 
         # ----> Plotting grid:
-        if plotting_grid == 'default':
-            points = 101
-        elif plotting_grid == 'fine':
-            points = 1001
+        z = np.linspace(-10,10, 500)
+        # y = np.linspace(-5,5, 40)
+        y = [0]
+        x = [0]
+        # x = [0]
+        grid, _ = self.generate_grids(x,y,z)
 
-        #Plot in 1D along z-axis
-        z = np.linspace(-10,10,points)[:,None]
-        y = np.linspace(-10,10,points)[:,None]
-        x = np.linspace(-10,10,points)[:,None]
 
-        self.plot_points = np.concatenate((x,y,z), axis=1).T
-        self.plot_npoints = z.shape[0]
+        self.plot_points = grid
+        self.plot_npoints = grid.shape[1]
         self.z = z
+        self.y = y
+        self.x = x
 
 
     def grid_to_blocks(self, grid, basis=None):
@@ -153,10 +154,14 @@ class Grider(Cubeprop):
         # x,y,z, = grid
         shape = (len(x), len(y), len(z))
         X,Y,Z = np.meshgrid(x, y, z, indexing='ij')
+
+        self.mesh =  np.concatenate(( X.copy(),Y.copy(),Z.copy() ))
         X = X.reshape((X.shape[0] * X.shape[1] * X.shape[2], 1))
         Y = Y.reshape((Y.shape[0] * Y.shape[1] * Y.shape[2], 1))
         Z = Z.reshape((Z.shape[0] * Z.shape[1] * Z.shape[2], 1))
         grid = np.concatenate((X,Y,Z), axis=1).T
+
+        
 
         return grid, shape
 
@@ -181,7 +186,7 @@ class Grider(Cubeprop):
         blocks = [vpot.get_block(i) for i in range(nblocks)]
         npoints = vpot.grid().npoints()
 
-        dft_grid = np.empty((4, npoints))
+        dft_grid = np.zeros((4, npoints))
 
         offset = 0
         for i_block in blocks:
@@ -238,7 +243,7 @@ class Grider(Cubeprop):
         else:
             raise ValueError("A grid or a V_potential (DFT grid) must be given.")
 
-        coeff_r = np.empty((npoints))
+        coeff_r = np.zeros((npoints))
 
         offset = 0
         for i_block in blocks:
@@ -305,12 +310,12 @@ class Grider(Cubeprop):
         if Db is None:
             points_function.set_pointers(Da)
             rho_a = points_function.point_values()["RHO_A"]
-            density   = np.empty((npoints))
+            density   = np.zeros((npoints))
         else:
             points_function.set_pointers(Da, Db)
             rho_a = points_function.point_values()["RHO_A"]
             rho_b = points_function.point_values()["RHO_B"]
-            density   = np.empty((npoints, self.ref))
+            density   = np.zeros((npoints, self.ref))
 
         offset = 0
         for i_block in blocks:
@@ -376,11 +381,11 @@ class Grider(Cubeprop):
             raise ValueError("A grid or a V_potential (DFT grid) must be given.")
 
         if self.ref == 1:
-            orbitals_r = [np.empty((npoints)) for i_orb in range(self.nbf)]
+            orbitals_r = [np.zeros((npoints)) for i_orb in range(self.nbf)]
             points_function.set_pointers(Ca)
             Ca_np = Ca.np
         if self.ref == 2:
-            orbitals_r = [np.empty((npoints, 2)) for i_orb in range(self.nbf)]
+            orbitals_r = [np.zeros((npoints, 2)) for i_orb in range(self.nbf)]
             points_function.set_pointers(Ca, Cb)
             Ca_np = Ca.np
             Cb_np = Cb.np
@@ -510,6 +515,73 @@ class Grider(Cubeprop):
         else:
             return vext
 
+    def ext(self, vpot=None, grid=None):
+        """
+        Generates EXTERNAL given grid
+
+        Parameters
+        ----------
+        Da,Db: np.ndarray, opt, shape (nbf, nbf)
+            The electron density in the denominator of Hartee potential. If None, the original density matrix
+            will be used.
+        grid: np.ndarray Shape: (3, npoints) or (4, npoints) or tuple for block_handler (return of grid_to_blocks)
+            grid where density will be computed.
+        vpot: psi4.core.VBase
+            Vpotential object with info about grid.
+            Provides DFT spherical grid. Only comes to play if no grid is given. 
+        
+        Returns
+        -------
+        vext, hartree, esp, v_fa: np.ndarray
+            External, Hartree, ESP, and Fermi Amaldi potential on the given grid
+            Shape: (npoints, )
+        """
+        wfn = self.wfn
+        
+        if grid is not None:
+            if type(grid) is np.ndarray:
+                blocks, npoints, points_function = self.grid_to_blocks(grid)
+                print("nponits", npoints)
+            else:
+                blocks, npoints, points_function = grid
+        elif vpot is not None:
+            nblocks = vpot.nblocks()
+            blocks = [vpot.get_block(i) for i in range(nblocks)]
+            npoints = vpot.grid().npoints()
+        elif vpot is not None and grid is not None:
+            raise ValueError("Only one option can be given")
+
+        #Initialize Arrays
+        vext = np.zeros(npoints)
+
+        #Get Atomic Information
+        mol_dict = self.mol.to_schema(dtype='psi4')
+        natoms = len(mol_dict["elem"])
+        indx = [i for i in range(natoms) if self.mol.charge(i) != 0.0]
+        natoms = len(indx)
+        #Atomic numbers and Atomic positions
+        zs = [mol_dict["elez"][i] for i in indx]
+        rs = [self.mol.geometry().np[i] for i in indx]
+
+        #Loop Through blocks
+        offset = 0
+        with np.errstate(divide='ignore'):
+            for i_block in blocks:
+                b_points = i_block.npoints()
+                offset += b_points
+                x = i_block.x().np
+                y = i_block.y().np
+                z = i_block.z().np
+
+                #EXTERNAL
+                for atom in range(natoms):
+                    r =  np.sqrt((x-rs[atom][0])**2 + (y-rs[atom][1])**2 + (z-rs[atom][2])**2)
+                    vext_temp = - 1.0 * zs[atom] / r
+                    # vext_temp[np.isinf(vext_temp)] = 0.0
+                    vext[offset - b_points : offset] += vext_temp
+
+        return vext
+
     def vxc(self, func_id=1, 
                            Da=None, Db=None, 
                            vpot=None, grid=None):
@@ -560,7 +632,7 @@ class Grider(Cubeprop):
         else:
             raise ValueError("A grid or a V_potential (DFT grid) must be given.")
 
-        vxc = np.empty((npoints, self.ref))
+        vxc = np.zeros((npoints, self.ref))
         ingredients = {}
         offset = 0
         for i_block in blocks:
@@ -748,6 +820,53 @@ class Grider(Cubeprop):
                     grad_phi[i_orb][offset - b_points : offset, 1] += ((gx + gy + gz) @ Cb_local)[:,0]
 
         return grad_phi
+
+    def dft_grid_to_fock_one(self, value, Vpot): 
+        """For value on DFT spherical grid, Fock matrix is returned.
+        VFock_ij = \int dx \phi_i(x) \phi_j(x) value(x)
+        
+        Parameters:
+        -----------
+        value: np.ndarray of shape (npoint, ).
+
+        Vpot:psi4.core.VBase
+            Vpotential object with info about grid.
+            Provides DFT spherical grid. Only comes to play if no grid is given.
+        
+        Returns:
+        ---------
+        VFock: np.ndarray of shape (nbasis, nbasis)
+        """
+
+        VFock = np.zeros((self.nbf))
+        points_func = Vpot.properties()[0]
+
+        i = 0
+        # Loop over the blocks
+        for b in range(Vpot.nblocks()):
+            # Obtain block information
+            block = Vpot.get_block(b)
+            points_func.compute_points(block)
+            npoints = block.npoints()
+            lpos = np.array(block.functions_local_to_global())
+            if len(lpos) == 0:
+                i += npoints
+                continue
+            # Obtain the grid weight
+            w = np.array(block.w())
+
+            # Compute phi!
+            phi = np.array(points_func.basis_values()["PHI"])[:npoints, :lpos.shape[0]]
+
+            Vtmp = np.einsum('pb,p,p->b', phi, value[i:i+npoints], w, optimize=True)
+
+            # Add the temporary back to the larger array by indexing, ensure it is symmetric
+            # VFock[(lpos[:, None], lpos)] += 0.5 * (Vtmp + Vtmp.T)
+            VFock[(lpos[:])] += Vtmp
+
+            i += npoints
+        assert i == value.shape[0], "Did not run through all the points. %i %i" %(i, value.shape[0])
+        return VFock
 
     def dft_grid_to_fock(self, value, Vpot):
         """For value on DFT spherical grid, Fock matrix is returned.

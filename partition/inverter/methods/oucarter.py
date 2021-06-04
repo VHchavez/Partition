@@ -120,12 +120,10 @@ class Oucarter():
             vxc_LDA_DFT = vxc_LDA_DFT[:, 0]
 
         # _average_local_orbital_energy() taken from mrks.py.
+
+        # Compute everything for ALPHA
         e_bar_DFT = self._average_local_orbital_energy(Da_LDA, Ca_LDA[:,:Nalpha], epsilon_a_LDA[:Nalpha])
         e_bar     = self._average_local_orbital_energy(Da_LDA, Ca_LDA[:, :Nalpha], epsilon_a_LDA[:Nalpha], grid_info=grid_info)
-
-        print("ebar dft shape", e_bar_DFT.shape)
-        print("ebar shape", e_bar.shape)
-
 
         tauLmP_rho_DFT = self._get_l_kinetic_energy_density_directly(Da_LDA)
         tauLmP_rho = self._get_l_kinetic_energy_density_directly(Da_LDA, grid_info=grid_info)
@@ -135,10 +133,6 @@ class Oucarter():
 
         tauL_rho_DFT = tauLmP_rho_DFT + tauP_rho_DFT
         tauL_rho = tauLmP_rho + tauP_rho
-
-        print("bar", e_bar_DFT.shape)
-        print("tau", tauL_rho_DFT.shape)
-        print("vxc", vxc_LDA_DFT.shape)
 
         vext_opt_no_H_DFT = e_bar_DFT - tauL_rho_DFT - vxc_LDA_DFT
         vext_opt_no_H = e_bar - tauL_rho - vxc_LDA
@@ -154,6 +148,8 @@ class Oucarter():
         # vext_opt -= shift
 
         if self.ref != 1:
+
+            # Compute everything for BETA
             e_bar_DFT_beta = self._average_local_orbital_energy(Db_LDA, Cb_LDA[:,:Nbeta], epsilon_b_LDA[:Nbeta])
             e_bar_beta = self._average_local_orbital_energy(Db_LDA, Cb_LDA[:, :Nbeta], epsilon_b_LDA[:Nbeta], grid_info=grid_info)
 
@@ -170,20 +166,23 @@ class Oucarter():
             vext_opt_no_H_DFT_beta = e_bar_DFT_beta - tauL_rho_DFT_beta - vxc_LDA_DFT_beta
             vext_opt_no_H_beta = e_bar_beta - tauL_rho_beta - vxc_LDA_beta
 
-            vext_opt_no_H_DFT_Fock_beta = self.dft_grid_to_fock(vext_opt_no_H_DFT_beta, self.Vpot)
+            vext_opt_no_H_DFT_Fock_beta = self.grid.dft_grid_to_fock(vext_opt_no_H_DFT_beta, self.grid.vpot)
             vext_opt_DFT_Fock_beta = vext_opt_no_H_DFT_Fock_beta - J[0] - J[1]
 
-            vext_opt_beta = vext_opt_no_H_beta - vH
+            _, vH_beta     = self.grid.esp(grid=grid_info, Da=wfn_LDA.Da().np, Db=wfn_LDA.Db().np, compute_hartree=True)
+            _, vH_DFT_beta = self.grid.esp(Da=wfn_LDA.Da().np, Db=wfn_LDA.Db().np, vpot=self.grid.vpot, compute_hartree=True)
+            vext_opt_beta = vext_opt_no_H_beta - vH_beta
+            vext_DFT_beta = vext_opt_no_H_DFT_beta - vH_DFT_beta
 
-            # vext_opt_DFT_Fock = (vext_opt_DFT_Fock + vext_opt_DFT_Fock_beta) * 0.5
-            # vext_opt = (vext_opt + vext_opt_beta) * 0.5
-
-            return (vext_opt_DFT_Fock, vext_opt_DFT_Fock_beta), (vext_opt, vext_opt_beta)
+            if return_dft_grid:
+                return vext_opt_DFT_Fock, vext_opt, vext_DFT, vext_opt_DFT_Fock_beta, vext_opt_beta, vext_DFT_beta 
+            else:
+                return (vext_opt_DFT_Fock, vext_opt_DFT_Fock_beta), (vext_opt, vext_opt_beta)
         
         if return_dft_grid:
             return vext_opt_DFT_Fock, vext_opt, vext_DFT
-        
-        return vext_opt_DFT_Fock, vext_opt
+        else:
+            return vext_opt_DFT_Fock, vext_opt
     
     def _average_local_orbital_energy(self, D, C, eig, grid_info=None):
         """
@@ -315,6 +314,7 @@ class Oucarter():
                 fock_b = self.V + self.T + self.vb + vbeta
 
 
+
         self.Ca, self.Coca, self.Da, self.eigvecs_a = self.diagonalize( fock_a, self.nalpha )
 
         if self.ref == 1:
@@ -358,8 +358,8 @@ class Oucarter():
                 method name string that works for psi4. A separate psi4 calculation
                 would be performed."""
 
-        Nalpha = self.nalpha
-        Nbeta = self.nbeta
+    # Nalpha = self.nalpha
+    # Nbeta  = self.nbeta
         self.Vpot = self.grid.vpot
 
         # Generate jk object
@@ -367,8 +367,9 @@ class Oucarter():
 
         # Calculate hartree as the guide potential
         _, self.va0 = self.grid.esp(Da=self.dt[0], Db=self.dt[1], vpot=self.Vpot, compute_hartree=True)
-        self.va = self.grid.dft_grid_to_fock( self.va0, self.grid.vpot )
-        vH0_Fock = self.va
+        self.va     = self.grid.dft_grid_to_fock( self.va0, self.grid.vpot )
+        self.vb     = self.va
+        vH0_Fock    = self.va 
 
         # Set pointers for somthing?
         p4da = psi4.core.Matrix.from_array(self.dt[0])
@@ -378,12 +379,6 @@ class Oucarter():
             grid_info[-1].set_pointers(p4da)
         else:
             grid_info[-1].set_pointers(p4da, p4db)
-
-        # Get effective external potential
-        if self.ref == 1:
-            vext_opt_Fock, vext_opt, vext_DFT = self._get_optimized_external_potential(grid_info, return_dft_grid=True)
-        else:
-            (vext_opt_Fock, vext_opt_Fock_beta), (vext_opt, vext_opt_beta) = self._get_optimized_external_potential(grid_info)
 
         # Initialization. 
         if init is None:
@@ -396,18 +391,33 @@ class Oucarter():
             # self.Cocb = np.copy(self.ct[1])
             # self.eigvecs_b = self.wfn.epsilon_b().np[:Nbeta]
         elif init.lower()=="continue":
+            print("ARGH")
             pass
         else:
+            # Initial SVWN for External Potential
             wfn_temp = psi4.energy(init+"/" + self.basis_str, 
                                    molecule=self.mol, 
                                    return_wfn=True)[1]
+            self.nalpha = wfn_temp.nalpha()
+            self.nbeta  = wfn_temp.nbeta()
+            Nalpha = self.nalpha
+            Nbeta = self.nbeta
             self.Da = np.array(wfn_temp.Da())
             self.Coca = np.array(wfn_temp.Ca())[:, :Nalpha]
             self.eigvecs_a = np.array(wfn_temp.epsilon_a())
             self.Db = np.array(wfn_temp.Db())
             self.Cocb = np.array(wfn_temp.Cb())[:, :Nbeta]
             self.eigvecs_b = np.array(wfn_temp.epsilon_b())
+
             del wfn_temp
+
+        # Get effective external potential
+        if self.ref == 1:
+            vext_opt_Fock, vext_opt, vext_DFT = self._get_optimized_external_potential(grid_info, return_dft_grid=True)
+        else:
+            # (vext_opt_Fock, vext_opt_Fock_beta), (vext_opt, vext_opt_beta) = self._get_optimized_external_potential(grid_info)
+            vext_opt_Fock, vext_opt, vext_DFT, vext_opt_Fock_beta, vext_opt_beta, vext_DFT_beta = self._get_optimized_external_potential(grid_info, return_dft_grid=True)
+
 
         vxc_old = 0.0
         vxc_old_beta = 0.0
@@ -415,21 +425,22 @@ class Oucarter():
         eig_old = 0.0
         tauLmP_rho = self._get_l_kinetic_energy_density_directly(self.dt[0])
         if self.ref != 1:
-            raise ValueError("What the fuck")
             tauLmP_rho_beta = self._get_l_kinetic_energy_density_directly(self.dt[1])
 
         # ----> Begin SCF:
         for OC_step in range(1, maxiter+1):
+
+            # ALPHA components
             tauP_rho = self._pauli_kinetic_energy_density(self.Da, self.Coca)
             e_bar    = self._average_local_orbital_energy(self.Da, self.Coca, self.eigvecs_a[:Nalpha])
             #shift    = self.eigvecs_a[Nalpha - 1] - self.wfn.epsilon_a().np[Nalpha - 1]
             vxc_extH = e_bar - tauLmP_rho - tauP_rho #- shift
 
+                # BETA components
             if self.ref != 1:
                 tauP_rho_beta = self._pauli_kinetic_energy_density(self.Db, self.Cocb)
                 e_bar_beta = self._average_local_orbital_energy(self.Db, self.Cocb, self.eigvecs_b[:Nbeta])
                 # shift_beta = self.eigvecs_b[Nbeta - 1] - self.wfn.epsilon_b().np[Nbeta - 1]
-                # vxc + vext_opt + vH0
                 vxc_extH_beta = e_bar_beta - tauLmP_rho_beta - tauP_rho_beta #- shift_beta
 
             Derror = np.linalg.norm(self.Da - Da_old) #/ self.nbf ** 2
@@ -438,64 +449,99 @@ class Oucarter():
                 print("KSDFT stops updating.")
                 break
 
-            # linear Mixture
             if OC_step != 1:
                 vxc_extH = vxc_extH * (1 - frac_old) + vxc_old * frac_old
+                vxc_old = np.copy(vxc_extH)
 
                 if self.ref != 1:
                     vxc_extH_beta = vxc_extH_beta * (1 - frac_old) + vxc_old_beta * frac_old
+                    vxc_old_beta = np.copy(vxc_extH_beta)
 
-            vxc_old = np.copy(vxc_extH)
-            if self.ref != 1:
-                vxc_old_beta = np.copy(vxc_extH_beta)
+                    Vxc_extH_Fock_beta = self.grid.dft_grid_to_fock(vxc_extH_beta, self.Vpot)
+                    Vxc_Fock_beta = Vxc_extH_Fock_beta - vext_opt_Fock - vH0_Fock
 
             # Save old data.
             Da_old = np.copy(self.Da)
             eig_old = np.copy(self.eigvecs_a[:Nalpha])
 
             Vxc_extH_Fock = self.grid.dft_grid_to_fock(vxc_extH, self.Vpot)
-            Vxc_Fock = Vxc_extH_Fock - vext_opt_Fock - vH0_Fock
+            Vxc_Fock      = Vxc_extH_Fock - vext_opt_Fock - vH0_Fock
+            vxc_dft       = vxc_extH      - vext_DFT      - self.va0
 
-            if self.ref != 1:
-                Vxc_extH_Fock_beta = self.dft_grid_to_fock(vxc_extH_beta, self.Vpot)
-                Vxc_Fock_beta = Vxc_extH_Fock_beta - vext_opt_Fock_beta - vH0_Fock
-
+            # Compute vxc on basis
+            Vxc_extH_Fock = self.grid.dft_grid_to_fock(vxc_extH, self.Vpot)
+            Vxc_Fock      = Vxc_extH_Fock - vext_opt_Fock - vH0_Fock
+            vxc_dft       = vxc_extH      - vext_DFT      - self.va0
+                
             if self.ref == 1:
                 self._diagonalize_with_potential_vFock(v=Vxc_Fock)
             else:
                 self._diagonalize_with_potential_vFock(v=(Vxc_Fock, Vxc_Fock_beta))
 
 
-            print(f"Iter: {OC_step}, Density Change: {Derror:2.2e}, Eigenvalue Change: {eerror:2.2e}.")
+            print(f"\t\t\t\t\tIter: {OC_step}, Density Change: {Derror:2.2e}, Eigenvalue Change: {eerror:2.2e}.")
             # nerror = self.on_grid_density(Da=self.nt[0] - self.Da, Db=self.nt[1] - self.Da, Vpot=self.Vpot)
             # nerror = np.sum(np.abs(nerror.T) * w)
             # print("nerror", nerror)
 
-        # Calculate vxc on grid
-
+        # Get things on GRID
         vH0 = self.grid.esp(Da=self.dt[0], Db=self.dt[1], grid=grid_info, compute_hartree=True)[1]
         tauLmP_rho = self._get_l_kinetic_energy_density_directly(self.dt[0], grid_info=grid_info)
         tauP_rho = self._pauli_kinetic_energy_density(self.Da, self.Coca, grid_info=grid_info)
-        # shift = self.eigvecs_a[Nalpha - 1] - self.wfn.epsilon_a().np[Nalpha - 1]
         e_bar = self._average_local_orbital_energy(self.Da, self.Coca, self.eigvecs_a[:Nalpha], grid_info=grid_info)
+        # shift = self.eigvecs_a[Nalpha - 1] - self.wfn.epsilon_a().np[Nalpha - 1]
         if self.ref != 1:
             tauLmP_rho_beta = self._get_l_kinetic_energy_density_directly(self.dt[1], grid_info=grid_info)
             tauP_rho_beta = self._pauli_kinetic_energy_density(self.Db, self.Cocb, grid_info=grid_info)
-            # shift_beta = self.eigvecs_b[Nbeta - 1] - self.wfn.epsilon_b().np[Nbeta - 1]
             e_bar_beta = self._average_local_orbital_energy(self.Db, self.Cocb, self.eigvecs_b[:Nbeta], grid_info=grid_info)
+            # shift_beta = self.eigvecs_b[Nbeta - 1] - self.wfn.epsilon_b().np[Nbeta - 1]
 
+        # PLOT STUFF
         if self.ref == 1:
-            print("Returning quantities")
-            print(vxc_extH.shape)
-            print(self.va0.shape)
-            print(vext_DFT.shape)
-            vxc_dft = vxc_extH - self.va0 - vext_DFT
+            #vxc_extH = e_bar - tauLmP_rho - tauP_rho
             vxc_plotter = e_bar - tauLmP_rho - tauP_rho - vext_opt - vH0   #- shift
+
+            self.Plotter.oc_vxca = e_bar - tauLmP_rho - tauP_rho
+            self.Plotter.oc_tauLa = tauLmP_rho
+            self.Plotter.oc_tauPa = tauP_rho
+            self.Plotter.oc_vext = vext_opt
+            self.Plotter.oc_vh      = vH0
+            
+            #Tried different shit
+            # vxc_dft = vxc_extH
+            # vxc_plotter = e_bar - tauLmP_rho - tauP_rho
             # return vxc, e_bar, tauLmP_rho, tauP_rho, vext_opt, vH0 #, shift
-            return vxc_dft, vxc_plotter
         else:
-            vxc = np.array((e_bar - tauLmP_rho - tauP_rho, #- vext_opt - vH0, #- shift,
-                                      e_bar_beta - tauLmP_rho_beta - tauP_rho_beta #- vext_opt_beta - vH0,# - shift_beta
-                                      ))
-            return vxc, (e_bar, e_bar_beta), (tauLmP_rho, tauLmP_rho_beta), \
-                   (tauP_rho,tauP_rho_beta), (vext_opt, vext_opt_beta), vH0, #(shift, shift_beta)
+
+            self.Plotter.oc_vxca = e_bar - tauLmP_rho - tauP_rho
+            self.Plotter.oc_vxcb = e_bar_beta - tauLmP_rho_beta - tauP_rho_beta
+
+            self.Plotter.oc_tauLa = tauLmP_rho
+            self.Plotter.oc_tauLb = tauLmP_rho_beta
+
+            self.Plotter.oc_tauPa = tauP_rho
+            self.Plotter.oc_tauPb = tauP_rho_beta
+
+            self.Plotter.oc_vext = vext_opt
+            self.Plotter.oc_vh      = vH0
+
+            
+
+            vxc_dft_a = vxc_extH      - vext_DFT - self.va0
+            vxc_dft_b = vxc_extH_beta - vext_DFT - self.va0
+            vxca_plotter = e_bar - tauLmP_rho - tauP_rho                - vext_opt - vH0
+            vxcb_plotter = e_bar_beta - tauLmP_rho_beta - tauP_rho_beta - vext_opt - vH0
+
+            vxc_dft     = np.concatenate( (vxc_dft_a[None,:], vxc_dft_b[None,:]) )
+            vxc_plotter = np.concatenate( (vxca_plotter[None,:], vxcb_plotter[None,:]) )
+
+
+        return vxc_dft, vxc_plotter
+
+            # vxca = e_bar - tauLmP_rho - tauP_rho
+            # vxcb =
+            # vxc = np.array((e_bar - tauLmP_rho - tauP_rho, #- vext_opt - vH0, #- shift,
+            #                           e_bar_beta - tauLmP_rho_beta - tauP_rho_beta #- vext_opt_beta - vH0,# - shift_beta
+            #                           ))
+            # return vxc, (e_bar, e_bar_beta), (tauLmP_rho, tauLmP_rho_beta), \
+            #        (tauP_rho,tauP_rho_beta), (vext_opt, vext_opt_beta), vH0, #(shift, shift_beta)
