@@ -122,8 +122,20 @@ class Inverter(WuYang, Oucarter):
         """ 
 
         if guess.lower() == 'none':
-            self.va = np.zeros_like(self.dt[0])
-            self.vb = np.zeros_like(self.dt[0])
+            
+            Ja = np.einsum('pqrs,rs->pq', self.I, self.dt[0], optimize=True)
+            Jb = np.einsum('pqrs,rs->pq', self.I, self.dt[1], optimize=True)
+            
+
+            self.va = Ja + Jb
+            self.vb = Ja + Jb
+
+            # print("va = Hartree")
+            # cocca_0 = psi4.core.Matrix.from_array(self.ct[0]) 
+            # coccb_0 = psi4.core.Matrix.from_array(self.ct[1]) 
+            # self.J0, _ = self.part.form_jk(cocca_0, coccb_0)
+            # self.va = np.zeros_like(self.dt[0])
+            # self.vb = np.zeros_like(self.dt[0])
 
         else:
             cocca_0 = psi4.core.Matrix.from_array(self.ct[0]) 

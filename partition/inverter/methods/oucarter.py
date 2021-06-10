@@ -354,7 +354,6 @@ class Oucarter():
 
         # Make sure self.vb also has va
         vH0_Fock = self.va
-        
 
         # Initialization.
         if init is None:
