@@ -22,7 +22,7 @@ def vp_kinetic(self):
         # if self.optPart.verbose and self.iteration == 1:
         #     print("\t\t\tCalculating the vp kinetic")
 
-        # Individual vt
+        # Fragmetns vt
         for ifrag in self.frags:
             ifrag.V.vt =       - ( ifrag.V.vhxc + ifrag.V.vnuc)
             ifrag.Vnm.vt =     - ( ifrag.Vnm.vh + ifrag.Vnm.Vxca + ifrag.Vnm.V )
@@ -31,43 +31,25 @@ def vp_kinetic(self):
                 ifrag.Plotter.vt = - ( ifrag.Plotter.vhxc + ifrag.Plotter.vnuc)
 
         # Set target components
-        self.inverter.dt = [self.dfa, self.dfb]
-        self.inverter.ct = []
-        self.inverter.eigvecs_a = []
-        self.inverter.eigvecs_b = []
-
-
-        # veff_guess = vha + vc + vx #+ vn
-        # veff_guess = self.grid.dft_grid_to_fock_one(veff_guess, self.grid.vpot)
-        #veff_guess = np.zeros((self.nbf))
-        # self.inverter.v0 = np.concatenate((veff_guess, veff_guess))
-
-        # # Set up required matrices
-        # self.inverter.T = np.zeros_like(self.dfa)
-        # self.inverter.V = np.zeros_like(self.dfb)
-        # for ifrag in self.frags:
-        #     self.inverter.T += ifrag.V.Tnm
-        #     self.inverter.V += ifrag.V.Vnm
-
-        # Invert protomolecular density
-
-        _, vha = self.grid.esp(Da=self.dfa, Db=self.dfb, grid=self.grid.plot_points)
-        _, vha_dft = self.grid.esp(Da=self.dfa, Db=self.dfb, vpot=self.grid.vpot)
-        vc = self.grid.vxc(1,  Da=self.dfa, Db=self.dfb, grid=self.grid.plot_points)
-        vx = self.grid.vxc(12, Da=self.dfa, Db=self.dfb, grid=self.grid.plot_points)
+        # target_a = self.molSCF.da
+        # target_b = self.molSCF.db
+        _, vha = self.grid.esp(Da=self.inverter.dt[0], Db=self.inverter.dt[1], grid=self.grid.plot_points)
+        _, vha_dft = self.grid.esp(Da=self.inverter.dt[0], Db=self.inverter.dt[1], vpot=self.grid.vpot)
+        vc = self.grid.vxc(1,  Da=self.inverter.dt[0], Db=self.inverter.dt[1], grid=self.grid.plot_points)
+        vx = self.grid.vxc(12, Da=self.inverter.dt[0], Db=self.inverter.dt[1], grid=self.grid.plot_points)
         vn = self.Plotter.vnuc
 
         self.Plotter.vh0 = vha
         self.Plotter.vxc0 = vx + vc
         self.Plotter.vext0 = vn
-    
 
+        # Invert protomolecular density
         if self.optPart.inv_method == 'oucarter':
             print("\t\t\t\tStartiting Ou Carter inversion")
 
-
-            vxc_dft, vxc_plotter = self.inverter.invert(method=self.optPart.inv_method, opt_method=self.optPart.opt_method)
-
+            vxc_dft, vxc_plotter = self.inverter.invert(initial_guess='hartree',method=self.optPart.inv_method, opt_method=self.optPart.opt_method)
+            density_accuracy = np.linalg.norm(self.inverter.dt[0] -self.inverter.Da)
+            print("\t\t\t\tInverted Potential matched density:", density_accuracy)
 
             if self.ref == 2:
                 print("Shifting")
@@ -107,18 +89,43 @@ def vp_kinetic(self):
             # _, _ ,proto_density, _ = self.diagonalize( veff, self.nalpha )
             # self.wft_density = proto_density
 
-
         elif self.optPart.inv_method == 'wuyang':
-            self.inverter.invert(initial_guess='fermi_amaldi', method=self.optPart.inv_method, opt_method=self.optPart.opt_method)
-            vt_plotter = self.grid.on_grid_ao(self.inverter.v, grid=self.grid.plot_points)
-            vt         = self.grid.on_grid_ao(self.inverter.v, vpot=self.grid.vpot)
-            self.V.vt = vt + vn
-            self.Plotter.vt = vt_plotter + self.Plotter.vnuc
+            self.inverter.invert(initial_guess=self.initial_guess, method=self.optPart.inv_method, opt_method=self.optPart.opt_method)
+            density_accuracy = np.linalg.norm(self.inverter.dt[0] -self.inverter.Da)
+            print("\t\t\t\tInverted Potential matched density:", density_accuracy)
+
+
+            N = self.inverter.nalpha + self.inverter.nbeta
+
+            # PLOT
+            v_rest  = self.inverter.v_pbs
+            v_guess_plot = (1-1/N) * vha
+            v_rest_plot = self.grid.on_grid_ao( v_rest, grid=self.grid.plot_points )
+            vxc_plot = v_guess_plot + v_rest_plot - vha
+            hvxc_plot = v_guess_plot + v_rest_plot
+            self.Plotter.rest = v_rest
+            self.Plotter.inv_vxc = vxc_plot
+            self.Plotter.inv_hvxc = hvxc_plot
+            self.Plotter.vt = -(hvxc_plot + self.Plotter.vnuc)
+            
+            # DFT
+            v_rest_dft = self.grid.on_grid_ao(v_rest, vpot=self.grid.vpot)
+            v_guess_dft = (1-1/N) * vha_dft
+            hvxc_dft = v_rest_dft + v_guess_dft
+            self.V.vt = -(hvxc_dft + self.V.vnuc)
+
+            # NM
+            self.Vnm.vt = -(self.inverter.inv_vksa)
+
+        elif self.optPart.inv_method == 'wuyang_pdft':
+            print("I am inverting with wuyang pdft")
+            self.inverter.invert(initial_guess=self.initial_guess, method=self.optPart.inv_method, opt_method=self.optPart.opt_method)
+
 
 
     # Finalize vp_kin
     for ifrag in self.frags:
-        ifrag.V.vp_kin       = self.V.vt       - ifrag.V.vt
+        ifrag.V.vp_kin       = self.V.vt   - ifrag.V.vt
         ifrag.Vnm.vp_kin     = self.Vnm.vt - ifrag.Vnm.vt
 
         if self.plot_things:

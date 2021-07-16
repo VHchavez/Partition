@@ -17,6 +17,7 @@ from .pdft_scf import pdft_scf
 from .energy import energy
 from .partition_energy import partition_energy
 from .ep_kinetic import ep_kinetic
+from opt_einsum import contract
 
 # Partition Methods
 from .partition_potential import partition_potential
@@ -43,6 +44,9 @@ class bucket:
     pass
 @dataclass
 class V:    
+    pass
+@dataclass
+class Vnm:
     pass
 @dataclass
 class Plotter:    
@@ -129,7 +133,7 @@ def _scf(mol_string,
 
 
 class Partitioner(Grider):
-    def __init__(self, basis, method_str, frags_str=[], mol_str=None, ref=1, optPart={}):
+    def __init__(self, basis, method_str, frags_str=[], mol_str=None, ref=1, plot_things=True, optPart={}):
 
         # Validate options
         optPart = {k.lower(): v for k, v in optPart.items()}
@@ -150,6 +154,7 @@ class Partitioner(Grider):
 
         # Data buckets
         self.V = V()
+        self.Vnm = Vnm()
         self.E = E()
         self.Plotter = Plotter()
 
@@ -165,9 +170,9 @@ class Partitioner(Grider):
         A = self.mints.ao_overlap()
         A.power( -0.5, 1e-16 )
         self.A = np.array(A)
-        self.Tnm = self.mints.ao_kinetic()
-        self.Vnm = self.mints.ao_potential()
-        self.I = self.mints.ao_eri()
+        self.Tnm0 = self.mints.ao_kinetic()
+        self.Vnm0 = self.mints.ao_potential()
+        self.I   = np.array( self.mints.ao_eri() )
 
         # self.basis = psi4.core.BasisSet.build( self.mol, key='BASIS', target=self.basis_str)
         
@@ -177,8 +182,8 @@ class Partitioner(Grider):
         self.molE.Evha = mol_wfn.get_energies("Two-Electron")
         self.molE.Etot = mol_wfn.get_energies("Total Energy")
         self.molE.Enuc = mol_wfn.get_energies("Nuclear")
-        self.molE.Ekin = np.sum( self.Tnm * ( np.array(mol_wfn.Da()) + np.array(mol_wfn.Db()) ) )
-        self.molE.Eext = np.sum( self.Vnm * ( np.array(mol_wfn.Da()) + np.array(mol_wfn.Db()) ) )
+        self.molE.Ekin = np.sum( self.Tnm0 * ( np.array(mol_wfn.Da()) + np.array(mol_wfn.Db()) ) )
+        self.molE.Eext = np.sum( self.Vnm0 * ( np.array(mol_wfn.Da()) + np.array(mol_wfn.Db()) ) )
 
         mole = self.molE
         assert np.isclose( mole.Evxc + mole.Evha + mole.Enuc + mole.Ekin + mole.Eext, self.molE.Etot)
@@ -192,6 +197,7 @@ class Partitioner(Grider):
         
         # Grider & Plotting 
         self.grid = Grider(self.mol_str, self.basis_str, self.ref, self.optPart.plotting_grid)
+        self.plot_things = plot_things
         
         # Generate fragments
         self.generate_fragments(self.optPart.plotting_grid)
@@ -200,6 +206,10 @@ class Partitioner(Grider):
         # Inverter 
         if mol_str is not None:
             self.inverter = Inverter(self.mol, self.basis, self.ref, self.frags, self.grid)
+
+        self.inverter.plot_things = self.plot_things
+        self.inverter.I = self.I
+
 
         # Full Molecule
         # self.basis = psi4.core.BasisSet.build( self.mol, "ORBITAL", self.basis_str, quiet=True )
@@ -216,7 +226,17 @@ class Partitioner(Grider):
 
         self.frags = []
         for i in self.frags_str:
-            self.frags.append( Fragment(i, self.basis_str, self.method_str, self.ref, plotting_grid) )
+            frag = Fragment(i, self.basis_str, self.method_str, self.ref, plotting_grid)
+            frag.scf()
+            frag.A = self.A
+            frag.I = self.I
+            self.frags.append( frag )
+
+        for i in self.frags:
+            if self.plot_things:
+                i.plot_things = True
+            else:
+                i.plot_things = False
 
     def calc_protomolecule(self):
         """
@@ -272,12 +292,15 @@ class Partitioner(Grider):
 
         vnuc = np.zeros((self.grid.npoints))
         plot_vnuc = np.zeros((self.grid.plot_npoints))
+        vnuc_nm = np.zeros((self.nbf, self.nbf))
 
         for ifrag in self.frags:
             vnuc       += ifrag.V.vnuc.copy()
             plot_vnuc  += ifrag.Plotter.vnuc.copy()
+            vnuc_nm    += ifrag.Vnm.V
 
         # Plotting Grid
+        self.Vnm.V = vnuc_nm.copy()
         self.V.vnuc = vnuc.copy()
         self.Plotter.vnuc = plot_vnuc.copy()
 
@@ -323,6 +346,8 @@ class Partitioner(Grider):
 
             ifrag.Q = (ifrag.scale * d / df)[None,:]
             ifrag.Plotter.Q = (ifrag.scale * d_plotter / df_plotter)[None,:]
+            # ifrag.Q = 1
+            # ifrag.Plotter.Q = 1
             # Need to verify that q functions are functional. 
 
     def diagonalize(self, matrix, ndocc):
@@ -332,12 +357,11 @@ class Partitioner(Grider):
         C = A.dot(Cp)
         Cocc = C[:, :ndocc]
         D = contract('pi,qi->pq', Cocc, Cocc)
-
-        print("Diagonalizing", C.shape, Cocc.shape)
         return C, Cocc, D, eigvecs
 
     def scf(self, maxiter=1):
         pdft_scf(self, maxiter)
+
 
     # ----> Potential Methods
     def partition_potential(self):
@@ -441,59 +465,59 @@ class Partitioner(Grider):
         self.frags_coca = coc_suma.copy()
         self.frags_cocb = coc_sumb.copy()
 
-    def mirror_ab(self, iter_zero=False):
-        ### Mirrors:
-        # Density, Q, vx, vc, vh, vp
-        x,y,z,_ = self.grid.vpot.get_np_xyzw()
-        ive_been_flipped = [ False for i in range(len(x)) ]
+    # def mirror_ab(self, iter_zero=False):
+    #     ### Mirrors:
+    #     # Density, Q, vx, vc, vh, vp
+    #     x,y,z,_ = self.grid.vpot.get_np_xyzw()
+    #     ive_been_flipped = [ False for i in range(len(x)) ]
         
-        if self.ref == 1:
-            density = self.grid.density(Da=self.frags[0].da, vpot=self.grid.vpot)
-        else:
-            density = self.grid.density(Da=self.frags[0].da, Db=self.frags[0].da, vpot=self.grid.vpot)
+    #     if self.ref == 1:
+    #         density = self.grid.density(Da=self.frags[0].da, vpot=self.grid.vpot)
+    #     else:
+    #         density = self.grid.density(Da=self.frags[0].da, Db=self.frags[0].da, vpot=self.grid.vpot)
 
-        flip_d  =  np.zeros_like(x)
-        self.frags[1].Q     =  np.zeros_like(x)
-        self.frags[1].V.vx  =  np.zeros_like(x)
-        self.frags[1].V.vc  =  np.zeros_like(x)
-        self.frags[1].V.vh  =  np.zeros_like(x)
-        self.frags[1].V.vp  =  np.zeros_like(x)
+    #     flip_d  =  np.zeros_like(x)
+    #     self.frags[1].Q     =  np.zeros_like(x)
+    #     self.frags[1].V.vx  =  np.zeros_like(x)
+    #     self.frags[1].V.vc  =  np.zeros_like(x)
+    #     self.frags[1].V.vh  =  np.zeros_like(x)
+    #     self.frags[1].V.vp  =  np.zeros_like(x)
         
-        # Go through all points
-        for i in range(len(x)):
+    #     # Go through all points
+    #     for i in range(len(x)):
 
-            # Find the other point mirroring along the zaxis
-            flipid = np.intersect1d( np.intersect1d( np.where(x == x[i])[0], np.where(y == y[i])[0]), np.where(z == -z[i])[0] )[0]
+    #         # Find the other point mirroring along the zaxis
+    #         flipid = np.intersect1d( np.intersect1d( np.where(x == x[i])[0], np.where(y == y[i])[0]), np.where(z == -z[i])[0] )[0]
 
-            # Replace both points
-            if not ive_been_flipped[i]:
+    #         # Replace both points
+    #         if not ive_been_flipped[i]:
 
-                flip_d[flipid] = copy(density[i])                          # Density
-                flip_d[i]      = copy(density[flipid])
+    #             flip_d[flipid] = copy(density[i])                          # Density
+    #             flip_d[i]      = copy(density[flipid])
 
-                if not iter_zero:
-                    self.frags[1].Q[flipid]    = copy(self.frags[0].Q[i])       # Q
-                    self.frags[1].Q[i]         = copy(self.frags[0].Q[flipid])
+    #             if not iter_zero:
+    #                 self.frags[1].Q[flipid]    = copy(self.frags[0].Q[i])       # Q
+    #                 self.frags[1].Q[i]         = copy(self.frags[0].Q[flipid])
 
-                    self.frags[1].V.vx[flipid] = copy(self.frags[0].vx[i])       # Exchange
-                    self.frags[1].V.vx[i]      = copy(self.frags[0].vx[flipid])
+    #                 self.frags[1].V.vx[flipid] = copy(self.frags[0].vx[i])       # Exchange
+    #                 self.frags[1].V.vx[i]      = copy(self.frags[0].vx[flipid])
 
-                    self.frags[1].V.vc[flipid] = copy(self.frags[0].vc[i])       # Correlation
-                    self.frags[1].V.vc[i]      = copy(self.frags[0].vc[flipid])
+    #                 self.frags[1].V.vc[flipid] = copy(self.frags[0].vc[i])       # Correlation
+    #                 self.frags[1].V.vc[i]      = copy(self.frags[0].vc[flipid])
 
-                    self.frags[1].V.vh[flipid] = copy(self.frags[0].vh[i])       # Hartree
-                    self.frags[1].V.vh[i]      = copy(self.frags[0].vh[flipid])
+    #                 self.frags[1].V.vh[flipid] = copy(self.frags[0].vh[i])       # Hartree
+    #                 self.frags[1].V.vh[i]      = copy(self.frags[0].vh[flipid])
 
-                ive_been_flipped[i]      = True
-                ive_been_flipped[flipid] = True
+    #             ive_been_flipped[i]      = True
+    #             ive_been_flipped[flipid] = True
 
-        self.density_zero = density.copy()
-        self.density_inv  = flip_d.copy() 
+    #     self.density_zero = density.copy()
+    #     self.density_inv  = flip_d.copy() 
                 
-        if self.ref == 1:
-            self.frags[1].da = self.dft_grid_to_fock( flip_d, Vpot=self.grid.vpot )
-            self.frags[1].db = self.frags[1].da.copy()
-        else:
-            self.frags[1].db = self.dft_grid_to_fock( flip_d, Vpot=self.grid.vpot )
+    #     if self.ref == 1:
+    #         self.frags[1].da = self.dft_grid_to_fock( flip_d, Vpot=self.grid.vpot )
+    #         self.frags[1].db = self.frags[1].da.copy()
+    #     else:
+    #         self.frags[1].db = self.dft_grid_to_fock( flip_d, Vpot=self.grid.vpot )
 
 

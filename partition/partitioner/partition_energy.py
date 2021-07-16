@@ -30,11 +30,20 @@ def partition_energy(self):
         self.E.Ef_vxc += ifrag.E.Evxc # XC
         self.E.Ef_vha += ifrag.E.Evha # Hartree
 
+    self.frags_ekin = np.sum( self.Tnm0.np * (self.dfa + self.dfb) )
+    self.frags_eha  = np.einsum('pq,pq->', (self.inverter.va), self.dfa, optimize=True)
+    self.frags_ext  = np.sum( self.Vnm0.np * (self.dfa + self.dfb) )
+    #self.frags_exc
+
     # Components of Ep
-    self.E.Ep_kin = self.molE.Ekin - self.E.Ef_kin
-    self.E.Ep_vxc = self.molE.Evxc - self.E.Ef_vxc
-    self.E.Ep_vha = self.molE.Evha - self.E.Ef_vha
-    self.E.Ep_ext = self.molE.Eext - self.E.Ef_ext
+    self.E.Ep_kin  = self.frags_ekin - self.E.Ef_kin
+    self.E.Ep_vxc  = self.frags_exc - self.E.Ef_vxc
+    self.E.Ep_vha  = self.frags_eha - self.E.Ef_vha
+    self.E.Ep_ext  = self.frags_ext - self.E.Ef_ext
+    # self.E.Ep_kin = self.molE.Ekin - self.E.Ef_kin
+    # self.E.Ep_vxc = self.molE.Evxc - self.E.Ef_vxc
+    # self.E.Ep_vha = self.molE.Evha - self.E.Ef_vha
+    # self.E.Ep_ext = self.molE.Eext - self.E.Ef_ext
 
     # Ep and Ef
     self.E.Ep = self.E.Ep_kin + self.E.Ep_vha + self.E.Ep_vxc + self.E.Ep_ext

@@ -13,6 +13,7 @@ from opt_einsum import contract
 # from pyscf import scf
 
 from .methods.wuyang import WuYang
+from .methods.wuyang_pdft import WuYang_PDFT
 # from .methods.mrks import MRKS
 from .methods.oucarter import Oucarter
 
@@ -25,13 +26,12 @@ import sys
 class Plotter:    
     pass
 
-
 class InverterOptions(BaseModel):
     verbose : bool = True
 
-class Inverter(WuYang, Oucarter):
+class Inverter(WuYang_PDFT, Oucarter, WuYang):
 
-    def __init__(self, mol, basis, ref, frags, grid=None, jk=None, optInv={}):
+    def __init__(self, mol, basis, ref, frags, grid=None, jk=None, pbs='same', optInv={}):
 
         # Validate options
         optInv = {k.lower(): v for k, v in optInv.items()}
@@ -57,6 +57,12 @@ class Inverter(WuYang, Oucarter):
         self.ref      = ref
         self.frags    = frags
         self.nfrags   = len(frags)
+
+        self.pbs       = self.basis if pbs == "same" \
+                                    else psi4.core.BasisSet.build( self.mol, key='BASIS', target=self.pbs_str)
+        self.npbs      = self.pbs.nbf()
+        self.v_pbs     = np.zeros( (self.npbs) ) if self.ref == 1 \
+                                                else np.zeros( 2 * self.npbs )
 
         self.nalpha = None
         self.nbeta  = None
@@ -87,7 +93,7 @@ class Inverter(WuYang, Oucarter):
     #PDFT INVERSION ###################################################################################
 
     def invert(self, method, initial_guess="none", 
-                            opt_max_iter=100,
+                            opt_max_iter=500,
                             opt_method='trust-krylov'):
         """
         Inversion procedure routing
@@ -109,26 +115,42 @@ class Inverter(WuYang, Oucarter):
         self.opt_method = opt_method
 
         if method.lower() == "wuyang":
-            self.wuyang_invert(opt_method=opt_method, initial_guess='none')
+            self.wuyang_invert(opt_max_iter=1000)
+
+        if method.lower() == "wuyang_pdft":
+            self.wuyang_pdft()
 
         if method.lower() == 'oucarter':
 
-            vxc_dft, vxc_plotter = self.oucarter(5, self.grid.plot_points)
+            vxc_dft, vxc_plotter = self.oucarter(self.niter, self.grid.plot_points)
             return vxc_dft, vxc_plotter
 
     def initial_guess(self, guess):
         """
         Provides initial guess for inversion
         """ 
+        N = self.nalpha + self.nbeta
 
-        if guess.lower() == 'none':
-            
-            Ja = np.einsum('pqrs,rs->pq', self.I, self.dt[0], optimize=True)
-            Jb = np.einsum('pqrs,rs->pq', self.I, self.dt[1], optimize=True)
-            
+        Ja = np.einsum('pqrs,rs->pq', self.I, self.dt[0], optimize=True)
+        Jb = np.einsum('pqrs,rs->pq', self.I, self.dt[1], optimize=True)
 
+        if guess.lower() == 'hartree':
+            print("\t\t\t\tInitial Guess: Hartree")
             self.va = Ja + Jb
             self.vb = Ja + Jb
+
+        elif guess.lower() == 'fermi_amaldi':
+            print("\t\t\t\tInitial Guess: Fermi Amaldi")
+            v_fa = (1-1/N) * (Ja + Jb)
+
+            self.va = v_fa
+            self.vb = v_fa
+
+        elif guess.lower() == 'none':
+            print("\t\t\t\tInitial Guess: None")
+
+            self.va = np.zeros_like(Ja)
+            self.vb = np.zeros_like(Ja)
 
             # print("va = Hartree")
             # cocca_0 = psi4.core.Matrix.from_array(self.ct[0]) 

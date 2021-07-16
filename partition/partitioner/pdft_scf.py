@@ -20,12 +20,10 @@ def pdft_scf(self, maxiter, interacting=True):
 
     etol      = 1e-6
     maxiter   = maxiter
-    calc_type = 'vp'
     verbose   = True
     kinetic_type = 'inversion'
     interacting = True
-    alpha       = 0.7
-
+    alpha       = 0.3
 
     if interacting:
         print(f"SCF Calculation on interacting fragments")
@@ -48,13 +46,19 @@ def pdft_scf(self, maxiter, interacting=True):
     self.calc_protomolecule()
     self.calc_Q()
 
+    print("Initial Density Difference:", np.linalg.norm(self.molSCF.da - self.dfa)) 
+  
     # ----> Initialize SCF
     dif                 = 10.0
     old_E               = 0.0
     old_df              = self.dfa + self.dfb
+    old_da = self.dfa.copy()
+    old_db = self.dfb.copy()
     iterations          = 1
     inversionfailures   = 0
     STOP                = False
+    vp_full          = [np.zeros((self.nbf, self.nbf)), np.zeros((self.nbf, self.nbf))]
+    self.vp_grid     = np.zeros((self.grid.plot_npoints))
 
     if verbose:
         print("\tBegin PDFT-SCF Iterations")
@@ -74,7 +78,6 @@ def pdft_scf(self, maxiter, interacting=True):
             # ifrag.vxc = 1.0 * ifrag.vxc + 0.0 * ifrag.vhxc_old
 
     # ----> Calculate Partition Potential
-        
         if not interacting:
             vp = np.zeros_like(self.dfa)
             for ifrag in self.frags:
@@ -85,9 +88,19 @@ def pdft_scf(self, maxiter, interacting=True):
             vp = self.partition_potential()
             self.current_vp = vp.copy()
 
+            # coeff = np.linalg.norm(self.molSCF.da - self.dfa)
+            coeff = 0.25
+
             if self.ref == 1:
                 vp_nm = self.dft_grid_to_fock(vp[0,:], self.grid.vpot)
                 self.current_vp_nm = vp_nm.copy() 
+                # vp_nm = self.Vnm.vp
+                # vp_nm = psi4.core.Matrix.from_array(vp_nm)
+                # self.vp_grid += coeff * vp[0,:]
+                # vp_full[0] += coeff * vp_nm
+                # vp_full[1] += coeff * vp_nm
+                # vp_nm = vp_full
+                # self.vp_full_grid = vp_grid
                 vp_nm = [vp_nm]
             else:
                 vp_a = self.dft_grid_to_fock(vp[0,:], self.grid.vpot)
@@ -108,35 +121,45 @@ def pdft_scf(self, maxiter, interacting=True):
             psi4.core.clean()
             psi4.core.clean_variables()
 
-            old_da = ifrag.da.copy()
-            old_db = ifrag.db.copy()
-
             ifrag.scf(vext=vp_nm)
+            # ifrag.scf_manual(vext=vp_nm)
 
             #Calculate chemical potential
 
-            #Linear mixing
-            ifrag.da = (1-alpha) * old_da + alpha * ifrag.da
-            ifrag.db = (1-alpha) * old_db + alpha * ifrag.db
+        #Linear mixing
+
 
             #Get energy. Collect energies
         psi4.set_options({"DAMPING_PERCENTAGE" : 0, "DIIS" : True, "maxiter" : 100,})
-
 
     # ---> Check convergence
 
         # Build new system
         self.calc_protomolecule()
         self.calc_Q()
+
+        self.dfa = (1-alpha) * old_da + alpha * self.dfa
+        self.dfb = (1-alpha) * old_db + alpha * self.dfb
+        self.df = self.dfa + self.dfb
+        old_da = self.dfa.copy()
+        old_db = self.dfb.copy()
+
         self.energy()
+
+    
     
         # self.calc_all_energies()
 
         # Check convergence
-        dif_df = np.max(  self.df - old_df  )
+        scf_diff = np.linalg.norm(  self.df - old_df  )
+        target_diff = self.molSCF.da - self.dfa
         old_df = self.df
 
-        print(f" SCF Density Difference: {dif_df} | FragA Energy: {self.frags[0].E.Etot} | FragB Energy: {self.frags[1].E.Etot}")
+        # target_d = self.density(Da=self.molSCF.da,     vpot=self.grid.vpot)
+        # das      = self.density(Da=self.dfa,           vpot=self.grid.vpot)
+
+
+        print(f" SCF DD: {scf_diff} | Grid DD: {np.linalg.norm(target_diff)} | FragA E: {self.frags[0].E.Etot} | FragB E: {self.frags[1].E.Etot}")
 
 
         iterations += 1

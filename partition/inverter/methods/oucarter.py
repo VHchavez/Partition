@@ -142,10 +142,6 @@ class Oucarter():
             vxc_LDA_DFT_beta = vxc_LDA_DFT[:, 1]
             vxc_LDA_DFT = vxc_LDA_DFT[:, 0]
 
-        print("About to calculate the components of vext!")
-
-        print("Nalpha", Nalpha)
-
         # _average_local_orbital_energy() taken from mrks.py.
         e_bar_DFT = self._average_local_orbital_energy(Da_LDA, Ca_LDA[:, :Nalpha], epsilon_a_LDA[:Nalpha])
         e_bar     = self._average_local_orbital_energy(Da_LDA, Ca_LDA[:, :Nalpha], epsilon_a_LDA[:Nalpha], grid_info=grid_info)
@@ -176,7 +172,8 @@ class Oucarter():
         vext_opt_no_H_DFT_Fock = self.grid.dft_grid_to_fock(vext_opt_no_H_DFT, Vpot)
         vext_opt_DFT_Fock = vext_opt_no_H_DFT_Fock - J[0] - J[1]
         vh_dft = self.grid.esp(Da=Da_LDA, Db=Db_LDA,vpot=Vpot)[1]
-        vext_opt_dft = vext_opt_no_H_DFT - vh_dft
+        
+        vext_opt_dft      = vext_opt_no_H_DFT - vh_dft
         vH = self.grid.esp(Da=Da_LDA, Db=Db_LDA,grid=grid_info)[1]
         vext_opt = vext_opt_no_H - vH
         # vext_opt -= shift
@@ -200,15 +197,19 @@ class Oucarter():
             vext_opt_no_H_DFT_beta = e_bar_DFT_beta - tauL_rho_DFT_beta - vxc_LDA_DFT_beta
             vext_opt_no_H_beta = e_bar_beta - tauL_rho_beta - vxc_LDA_beta
 
-            vext_opt_no_H_DFT_Fock_beta = self.dft_grid_to_fock(vext_opt_no_H_DFT_beta, Vpot)
+            vext_opt_no_H_DFT_Fock_beta = self.grid.dft_grid_to_fock(vext_opt_no_H_DFT_beta, Vpot)
             vext_opt_DFT_Fock_beta = vext_opt_no_H_DFT_Fock_beta - J[0] - J[1]
 
-            vext_opt_beta = vext_opt_no_H_beta - vH
+            vext_opt_beta      = vext_opt_no_H_beta - vH
+            vext_opt_DFT_beta  = vext_opt_no_H_DFT_beta - vh_dft
 
             # vext_opt_DFT_Fock = (vext_opt_DFT_Fock + vext_opt_DFT_Fock_beta) * 0.5
             # vext_opt = (vext_opt + vext_opt_beta) * 0.5
 
-            return (vext_opt_DFT_Fock, vext_opt_DFT_Fock_beta), (vext_opt, vext_opt_beta)
+            # return (vext_opt_DFT_Fock, vext_opt_DFT_Fock_beta), (vext_opt, vext_opt_beta)
+
+            return vext_opt_DFT_Fock, vext_opt, vext_opt_dft, vext_opt_DFT_Fock_beta, vext_opt_beta, vext_opt_DFT_beta
+
         return vext_opt_DFT_Fock, vext_opt, vext_opt_dft
     
     def _average_local_orbital_energy(self, D, C, eig, grid_info=None):
@@ -333,7 +334,7 @@ class Oucarter():
         return taup_rho
 
     def oucarter(self, maxiter, vxc_grid, D_tol=1e-7,
-             eig_tol=1e-4, frac_old=0.5, init="scan"):
+             eig_tol=1e-4, frac_old=0.8, init="scan"):
 
         self.Vpot = self.grid.vpot
         
@@ -345,23 +346,23 @@ class Oucarter():
             grid_info[-1].set_pointers( p4da )
         else:
             grid_info[-1].set_pointers( p4da, p4db )
-
-        print("About to calculate vext opt")
         if self.ref == 1:
             vext_opt_Fock, vext_opt, vext_opt_DFT = self._get_optimized_external_potential(grid_info)
         else:
-            (vext_opt_Fock, vext_opt_Fock_beta), (vext_opt, vext_opt_beta) = self._get_optimized_external_potential(grid_info)
+            # vext_opt_DFT_Fock, vext_opt, vext_opt_dft, vext_opt_DFT_Fock_beta, vext_opt_beta, vext_opt_DFT_beta
+            vext_opt_Fock, vext_opt, vext_opt_DFT, vext_opt_Fock_beta, vext_opt_beta, vext_opt_DFT_beta = self._get_optimized_external_potential(grid_info)
+            # (vext_opt_Fock, vext_opt_Fock_beta), (vext_opt, vext_opt_beta) 
 
         # Make sure self.vb also has va
         vH0_Fock = self.va
 
         # Initialization.
         if init is None:
-            self.Da = np.copy(self.Dt[0])
+            self.Da = np.copy(self.dt[0])
             self.Coca = np.copy(self.ct[0])
             self.eigvecs_a = self.wfn.epsilon_a().np[:Nalpha]
 
-            self.Db = np.copy(self.Dt[1])
+            self.Db = np.copy(self.dt[1])
             self.Cocb = np.copy(self.ct[1])
             self.eigvecs_b = self.wfn.epsilon_b().np[:Nbeta]
         elif init.lower()=="continue":
@@ -407,11 +408,12 @@ class Oucarter():
             if self.ref != 1:
                 tauP_rho_beta = self._pauli_kinetic_energy_density(self.Db, self.Cocb)
                 e_bar_beta = self._average_local_orbital_energy(self.Db, self.Cocb, self.eigvecs_b[:Nbeta])
-                shift_beta = self.eigvecs_b[Nbeta - 1] - self.wfn.epsilon_b().np[Nbeta - 1]
+                # shift_beta = self.eigvecs_b[Nbeta - 1] - self.wfn.epsilon_b().np[Nbeta - 1]
                 # vxc + vext_opt + vH0
                 vxc_extH_beta = e_bar_beta - tauLmP_rho_beta - tauP_rho_beta #- shift_beta
 
-            Derror = np.linalg.norm(self.Da - Da_old) / self.nbf ** 2
+            # Derror = np.linalg.norm(self.Da - Da_old) / self.nbf ** 2
+            Derror = np.linalg.norm(  np.abs(self.Da - Da_old) )
             eerror = (np.linalg.norm(self.eigvecs_a[:Nalpha] - eig_old) / Nalpha)
             if (Derror < D_tol) and (eerror < eig_tol):
                 print("KSDFT stops updating.")
@@ -436,8 +438,13 @@ class Oucarter():
             Vxc_Fock = Vxc_extH_Fock - vext_opt_Fock - vH0_Fock
 
             if self.ref != 1:
-                Vxc_extH_Fock_beta = self.dft_grid_to_fock(vxc_extH_beta, self.Vpot)
+                Vxc_extH_Fock_beta = self.grid.dft_grid_to_fock(vxc_extH_beta, self.Vpot)
                 Vxc_Fock_beta = Vxc_extH_Fock_beta - vext_opt_Fock_beta - vH0_Fock
+
+            #Save stuff to inverter
+            self.Vxca_inv = Vxc_Fock
+            if self.ref != 1:
+                self.Vxcb_inv = Vxc_Fock_beta
 
             if self.ref == 1:
                 self._diagonalize_with_potential_vFock(v=Vxc_Fock)
@@ -445,10 +452,13 @@ class Oucarter():
                 self._diagonalize_with_potential_vFock(v=(Vxc_Fock, Vxc_Fock_beta))
 
 
-            print(f"Iter: {OC_step}, Density Change: {Derror:2.2e}, Eigenvalue Change: {eerror:2.2e}.")
+            print(f"\t\t\t\tIter: {OC_step}, Density Change: {Derror:2.2e}, Eigenvalue Change: {eerror:2.2e}.")
             # nerror = self.on_grid_density(Da=self.Dt[0] - self.Da, Db=self.Dt[1] - self.Da, Vpot=self.Vpot)
             # nerror = np.sum(np.abs(nerror.T) * w)
             # print("nerror", nerror)
+
+        # print(self.Da[:4,:4])
+        # print(self.dt[0][:4,:4])
 
         # Calculate vxc on grid
         vH0 = self.grid.esp(Da=self.Da, Db=self.Db, grid=grid_info)[1]
@@ -476,20 +486,45 @@ class Oucarter():
 
 
             #vxc plot components
-            self.oc_vext = vext_opt
-            self.oc_vh   = vH0
-            self.oc_vxc = e_bar - tauLmP_rho - tauP_rho
-            self.oc_e = e_bar
-            self.oc_taul = tauLmP_rho
-            self.oc_taup = tauP_rho
+            self.vexta = vext_opt
+            self.vha   = vH0
+            self.vxca = e_bar - tauLmP_rho - tauP_rho
+            self.ebara = e_bar
+            self.taula = tauLmP_rho
+            self.taupa = tauP_rho
 
             vxc_plot = e_bar - tauLmP_rho - tauP_rho - vext_opt - vH0 #- shift
 
             return vxc_dft, vxc_plot
 
         else:
-            self.grid.vxc = np.array((e_bar - tauLmP_rho - tauP_rho - vext_opt - vH0, #- shift,
-                                      e_bar_beta - tauLmP_rho_beta - tauP_rho_beta - vext_opt_beta - vH0 #- shift_beta
-                                      ))
-            return self.grid.vxc, (e_bar, e_bar_beta), (tauLmP_rho, tauLmP_rho_beta), \
-                   (tauP_rho,tauP_rho_beta), (vext_opt, vext_opt_beta), vH0, (shift, shift_beta)
+            print("Im returning Unrestricted")
+
+            self.vexta = vext_opt
+            self.vh   = vH0
+            self.ebara = e_bar
+            self.taula = tauLmP_rho
+            self.taupa = tauP_rho
+
+            self.vextb = vext_opt_beta
+            self.ebarb = e_bar_beta
+            self.taulb = tauLmP_rho_beta
+            self.taupb = tauP_rho_beta
+
+
+            vxc_plot_a  = e_bar - tauLmP_rho - tauP_rho - vext_opt - vH0
+            vxc_plot_b  = e_bar_beta - tauLmP_rho_beta - tauP_rho_beta - vext_opt_beta - vH0
+            vxc_dft_a   = vxc_extH      - vext_opt_DFT      - vH0_DFT
+            vxc_dft_b   = vxc_extH_beta - vext_opt_DFT_beta - vH0_DFT
+
+            self.oc_vxc_a = vxc_plot_a
+            self.oc_vxc_b = vxc_plot_b
+
+            return (vxc_dft_a, vxc_dft_b), (vxc_plot_a, vxc_plot_b)
+
+            # self.grid.vxc = np.array((e_bar - tauLmP_rho - tauP_rho - vext_opt - vH0, #- shift,
+            #                           e_bar_beta - tauLmP_rho_beta - tauP_rho_beta - vext_opt_beta - vH0 #- shift_beta
+            #                           ))
+
+            # return self.grid.vxc, (e_bar, e_bar_beta), (tauLmP_rho, tauLmP_rho_beta), \
+            #        (tauP_rho,tauP_rho_beta), (vext_opt, vext_opt_beta), vH0, (shift, shift_beta)

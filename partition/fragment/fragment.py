@@ -10,6 +10,7 @@ import numpy as np
 import psi4
 from dataclasses import dataclass
 from pydantic import validator, BaseModel
+from opt_einsum import contract
 
 from ..grid import Grider
 
@@ -26,6 +27,9 @@ class V: # Implicityly on the basis set
 
 @dataclass
 class Plotter:
+    pass
+
+class Vnm_fragment:
     pass
 
 @dataclass
@@ -160,6 +164,7 @@ class Fragment():
         self.V = V() # Potential data bucket
         self.E = E() # Energy data bucket
         self.Plotter = Plotter() # Quantites on grid bucket
+        self.Vnm = Vnm_fragment() # Quantities on ao basis set
 
         # ---_> Machinery to compute the scf
 
@@ -185,7 +190,6 @@ class Fragment():
         
         # Ensemble
         self.scale = 1.0
-
         self.calc_nuclear_potential()
 
 
@@ -231,14 +235,15 @@ class Fragment():
         vext = self.grid.esp( Da=np.zeros((self.nbf, self.nbf)), 
                               Db=np.zeros((self.nbf, self.nbf)), 
                               vpot=self.grid.vpot, compute_hartree=False)
+        self.V.vnuc       = vext
 
         # Plotting Grid
+        # if self.plot_things:
         plot_vext = self.grid.esp(  Da=np.zeros((self.nbf, self.nbf)), 
                                     Db=np.zeros((self.nbf, self.nbf)), 
                                     grid=self.grid.plot_points, compute_hartree=False)
-
-        self.V.vnuc       = vext
         self.Plotter.vnuc = plot_vext
+
 
     def calc_hxc_potential(self):
         """
@@ -264,23 +269,92 @@ class Fragment():
             #     self.Plotter.vnuc[0,:], self.Plotter.vh[0,:] = self.grid.esp( self.da, np.zeros_like(self.db), grid=self.grid.plot_points )
             #     self.Plotter.vnuc[1,:], self.Plotter.vh[1,:] = self.grid.esp( self.db, np.zeros_like(self.db), grid=self.grid.plot_points )
             
+
             # else:
-            self.V.vnuc, self.V.vh = self.grid.esp(self.da, self.db, self.grid.vpot)
-            self.Plotter.vnuc, self.Plotter.vh = self.grid.esp(self.da, self.db, grid=self.grid.plot_points)
+            self.V.vnuc, self.V.vh = self.grid.esp(self.da, self.db, self.grid.vpot) 
 
+            if self.plot_things:
+                self.Plotter.vnuc, self.Plotter.vh = self.grid.esp(self.da, self.db, grid=self.grid.plot_points)
+
+            # Testing wether forming a single density from adding different alpha/beta turns fine.             
+            # total_d = (self.da + self.db) / 2 
+            # zeros   = np.zeros_like(total_d)
+            # self.V.vx       = self.grid.vxc(func_id=1 , Da=total_d, Db=zeros, vpot=self.grid.vpot).T
+            # self.V.vc       = self.grid.vxc(func_id=12, Da=total_d, Db=zeros, vpot=self.grid.vpot).T
+            # self.Plotter.vx = self.grid.vxc(func_id=1 , Da=total_d, Db=zeros, grid=self.grid.plot_points).T
+            # self.Plotter.vc = self.grid.vxc(func_id=12, Da=total_d, Db=zeros, grid=self.grid.plot_points).T
+
+            # Correct Separate component
             # Exchange/Correlation on DFT grid
-            self.V.vx = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, vpot=self.grid.vpot).T
-            self.V.vc = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, vpot=self.grid.vpot).T
-            self.V.vxc = self.V.vx + self.V.vc
-            self.V.vhxc = self.V.vh + self.V.vx + self.V.vc
+            self.V.vx       = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, vpot=self.grid.vpot).T
+            self.V.vc       = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, vpot=self.grid.vpot).T
 
-            # # Plotting components
-            self.Plotter.vx = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, grid=self.grid.plot_points).T
-            self.Plotter.vc = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, grid=self.grid.plot_points).T
-            self.Plotter.vxc = self.Plotter.vx + self.Plotter.vc
-            self.Plotter.vhxc = self.Plotter.vh + self.Plotter.vx + self.Plotter.vc
+            if self.plot_things:
+                self.Plotter.vx = self.grid.vxc(func_id=1 , Da=self.da, Db=self.db, grid=self.grid.plot_points).T
+                self.Plotter.vc = self.grid.vxc(func_id=12, Da=self.da, Db=self.db, grid=self.grid.plot_points).T
+                if self.ref == 2:
+                    self.Plotter.vx = np.sum( self.Plotter.vx, axis=0 ) /2
+                    self.Plotter.vc = np.sum( self.Plotter.vc, axis=0 ) /2
 
-            pass
+            if self.ref == 2:
+                self.V.vx       = np.sum( self.V.vx, axis=0 ) /2
+                self.V.vc       = np.sum( self.V.vc, axis=0 ) /2
+
+            self.V.vxc        = self.V.vx + self.V.vc
+            self.V.vhxc       = self.V.vh + self.V.vx + self.V.vc
+
+            if self.plot_things:
+                self.Plotter.vxc  = self.Plotter.vx + self.Plotter.vc
+                self.Plotter.vhxc = self.Plotter.vh + self.Plotter.vx + self.Plotter.vc
+
+    def diagonalize(self, matrix, ndocc):
+        A = self.A
+        Fp = A.dot(matrix).dot(A)
+        eigvecs, Cp = np.linalg.eigh(Fp)
+        C = A.dot(Cp)
+        Cocc = C[:, :ndocc]
+        D = contract('pi,qi->pq', Cocc, Cocc)
+        return C, Cocc, D, eigvecs
+
+    def scf_manual(self, maxiter=50, vext=None):
+        #Initial guess
+        F = self.V.Vnm + self.V.Tnm
+        C, Cocc, D, eigvecs = self.diagonalize(F, self.nalpha)
+        D_old = D.copy()
+
+        for i in range(maxiter):
+
+            F = self.V.Vnm + self.V.Tnm
+            J = np.einsum('pqrs,rs->pq', self.I, D, optimize=True)    
+            F += 2*J
+
+            n = psi4.core.Matrix.from_array( [ D ] )
+            self.wfn.V_potential().set_D( [n,n] )
+            vxc_a = psi4.core.Matrix( self.nbf, self.nbf )
+            vxc_b = psi4.core.Matrix( self.nbf, self.nbf )
+            self.wfn.V_potential().compute_V([vxc_a, vxc_b])
+            F +=  vxc_a
+
+            if vext is not None:
+                F += vext[0]
+
+            C, Cocc, D, eigvecs = self.diagonalize(F, self.nalpha)
+
+            DD = np.abs(np.sum(D-D_old))
+            D_old = D
+            print("SCF Difference", DD)
+
+            self.da = D
+            self.db = D
+            self.ca = C
+            self.cb = C
+            self.cocca = Cocc
+            self.coccb = Cocc
+            self.eigs_a = eigvecs
+            self.eigs_b = eigvecs
+
+            if DD < 1e-6:
+                break
 
     def scf(self, 
                  vext= None,
@@ -290,11 +364,13 @@ class Fragment():
         # psi4.core.clean()
         # psi4.core.clean_options()
         # psi4.core.clean_variables()
+        psi4.set_options({"save_jk" : True})
 
         mol = psi4.geometry(self.mol_str)
         wfn_base = psi4.core.Wavefunction.build(mol, self.basis_str)
         wfn = psi4.proc.scf_wavefunction_factory(self.method, wfn_base, "UKS")
         wfn.initialize()
+
 
         if vext is not None:
             wfn.iterations(vp_matrix=vext)
@@ -320,6 +396,9 @@ class Fragment():
         # Store PostSCF Quantites
         self.da = np.array(wfn.Da()).copy()
         self.db = np.array(wfn.Db()).copy()
+        # self.dt = self.da + self.db
+        # self.da = self.dt/2
+        # self.db = self.dt/2
         self.ca = np.array(wfn.Ca()).copy()
         self.cb = np.array(wfn.Cb()).copy()
         self.ccca = np.array(wfn.Ca_subset("AO", "OCC")).copy()
@@ -344,12 +423,13 @@ class Fragment():
             self.E.E0 = copy(self.E.Etot)                # Isolated fragments without vp
 
         # Potentials
-        self.V.Vxc_a = np.array(wfn.Va()).copy()
-        self.V.Vxc_b = np.array(wfn.Vb()).copy()
+        self.Vnm.T = np.array(T).copy()
+        self.Vnm.V = np.array(V).copy()
+        self.Vnm.Vxca = np.array(wfn.Va()).copy()
+        self.Vnm.vxcb = np.array(wfn.Vb()).copy()
+        if self.ref == 1:
+            self.Vnm.vh = 2 * wfn.jk().J()[0].np
+        else: 
+            self.Vnm.vh = wfn.jk().J()[0].np + wfn.jk().J()[1].np
 
-    def energy(self):
-        """
-        Gathers energy of each fragment
-        """
-
-        # 
+        self.wfn = wfn
