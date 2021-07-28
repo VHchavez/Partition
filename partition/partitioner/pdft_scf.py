@@ -86,10 +86,8 @@ def pdft_scf(self, maxiter, interacting=True):
             if verbose and iterations == 1:
                 print("\t\t\tCalculating Partition Potential")
             vp = self.partition_potential()
+            vp = self.V.vp_kin
             self.current_vp = vp.copy()
-
-            # coeff = np.linalg.norm(self.molSCF.da - self.dfa)
-            coeff = 0.25
 
             if self.ref == 1:
                 vp_nm = self.dft_grid_to_fock(vp[0,:], self.grid.vpot)
@@ -159,7 +157,7 @@ def pdft_scf(self, maxiter, interacting=True):
         # das      = self.density(Da=self.dfa,           vpot=self.grid.vpot)
 
 
-        print(f" SCF DD: {scf_diff} | Grid DD: {np.linalg.norm(target_diff)} | FragA E: {self.frags[0].E.Etot} | FragB E: {self.frags[1].E.Etot}")
+        print(f" SCF DD: {scf_diff} | AO DD: {np.linalg.norm(target_diff)} | FragA E: {self.frags[0].E.Etot} | FragB E: {self.frags[1].E.Etot}")
 
 
         iterations += 1
